@@ -16,9 +16,11 @@ class AuthorizedToolExecutor:
 
     def __init__(self, repository: CustomerFactsRepository) -> None:
         self.repository = repository
-        self._handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+        self._read_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "search_products": self._search_products,
             "lookup_order": self._lookup_order,
+        }
+        self._write_handlers: dict[str, Callable[[dict[str, Any], Any], dict[str, Any]]] = {
             "draft_after_sales": self._draft_after_sales,
             "draft_handoff": self._draft_handoff,
         }
@@ -30,27 +32,33 @@ class AuthorizedToolExecutor:
         def operation() -> dict[str, Any]:
             if tool_name not in self.declared_tools:
                 raise ValueError(f"Unknown customer tool: {tool_name}")
-            return self._handlers[tool_name](provided_arguments)
+            return self._read_handlers[tool_name](provided_arguments)
 
+        if tool_name in self._write_handlers:
+            return self._audited_write_call(
+                tool_name,
+                provided_arguments,
+                lambda session: self._write_handlers[tool_name](provided_arguments, session),
+            )
         return self._audited_call(tool_name, provided_arguments, operation)
 
     def submit_confirmed_action(self, action_id: str, customer_id: str) -> dict[str, Any]:
         arguments = {"action_id": action_id, "customer_id": customer_id}
 
-        def operation() -> dict[str, Any]:
-            action, ticket = self.repository.submit_pending_action(action_id, customer_id)
+        def operation(session: Any) -> dict[str, Any]:
+            action, ticket = self.repository.submit_pending_action(action_id, customer_id, session=session)
             return self._action_result(action, ticket)
 
-        return self._audited_call("submit_confirmed_action", arguments, operation)
+        return self._audited_write_call("submit_confirmed_action", arguments, operation)
 
     def cancel_pending_action(self, action_id: str, customer_id: str) -> dict[str, Any]:
         arguments = {"action_id": action_id, "customer_id": customer_id}
 
-        def operation() -> dict[str, Any]:
-            action = self.repository.cancel_pending_action(action_id, customer_id)
+        def operation(session: Any) -> dict[str, Any]:
+            action = self.repository.cancel_pending_action(action_id, customer_id, session=session)
             return self._action_result(action)
 
-        return self._audited_call("cancel_pending_action", arguments, operation)
+        return self._audited_write_call("cancel_pending_action", arguments, operation)
 
     def _search_products(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = str(arguments["query"])
@@ -62,31 +70,33 @@ class AuthorizedToolExecutor:
         order = self._owned_order(customer_id, order_id)
         return self._order_result(order)
 
-    def _draft_after_sales(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _draft_after_sales(self, arguments: dict[str, Any], session: Any) -> dict[str, Any]:
         customer_id = str(arguments["customer_id"])
         order_id = str(arguments["order_id"])
-        self._owned_order(customer_id, order_id)
+        self._owned_order(customer_id, order_id, session=session)
         action = self.repository.create_pending_action(
             customer_id=customer_id,
             action_type=ActionType.AFTER_SALES.value,
             order_id=order_id,
             reason=str(arguments["reason"]),
+            session=session,
         )
         return self._action_result(action)
 
-    def _draft_handoff(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _draft_handoff(self, arguments: dict[str, Any], session: Any) -> dict[str, Any]:
         customer_id = str(arguments["customer_id"])
-        if not self.repository.customer_exists(customer_id):
+        if not self.repository.customer_exists(customer_id, session=session):
             raise ToolPermissionError("Customer is not available for handoff")
         action = self.repository.create_pending_action(
             customer_id=customer_id,
             action_type=ActionType.HANDOFF.value,
             reason=str(arguments["reason"]),
+            session=session,
         )
         return self._action_result(action)
 
-    def _owned_order(self, customer_id: str, order_id: str) -> Order:
-        order = self.repository.get_owned_order(customer_id, order_id)
+    def _owned_order(self, customer_id: str, order_id: str, session: Any | None = None) -> Order:
+        order = self.repository.get_owned_order(customer_id, order_id, session=session)
         if order is None:
             raise ToolPermissionError("Order is not available to this customer")
         return order
@@ -120,6 +130,38 @@ class AuthorizedToolExecutor:
             duration_ms=self._duration_ms(started),
         )
         return result
+
+    def _audited_write_call(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        operation: Callable[[Any], dict[str, Any]],
+    ) -> dict[str, Any]:
+        started = perf_counter()
+        customer_id = arguments.get("customer_id")
+        try:
+            with self.repository.transaction() as session:
+                result = operation(session)
+                self.repository.record_tool_call(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    customer_id=str(customer_id) if customer_id is not None else None,
+                    status=ToolCallStatus.SUCCEEDED.value,
+                    result=result,
+                    duration_ms=self._duration_ms(started),
+                    session=session,
+                )
+                return result
+        except Exception as error:
+            self.repository.record_tool_call(
+                tool_name=tool_name,
+                arguments=arguments,
+                customer_id=str(customer_id) if customer_id is not None else None,
+                status=ToolCallStatus.REJECTED.value,
+                error_type=type(error).__name__,
+                duration_ms=self._duration_ms(started),
+            )
+            raise
 
     @staticmethod
     def _duration_ms(started: float) -> int:

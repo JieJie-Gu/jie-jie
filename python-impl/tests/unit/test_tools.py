@@ -1,11 +1,16 @@
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
+from sqlalchemy import event, select
+from sqlalchemy.exc import IntegrityError
 
 from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
+from smart_cs.domain.models import PendingAction
 from smart_cs.infrastructure.database import Database
 from smart_cs.infrastructure.repositories import SqlRepository
 from smart_cs.tools.executor import AuthorizedToolExecutor
@@ -109,6 +114,83 @@ def test_cancel_is_idempotent_and_submitted_action_cannot_be_cancelled(repo) -> 
     tools.submit_confirmed_action(submitted_draft["action_id"], "C001")
     with pytest.raises(InvalidActionState):
         tools.cancel_pending_action(submitted_draft["action_id"], "C001")
+
+
+def test_successful_write_rolls_back_when_success_audit_cannot_be_saved(tmp_path) -> None:
+    class InjectedAuditFailure(RuntimeError):
+        pass
+
+    class FailingSuccessfulAuditRepository(SqlRepository):
+        def record_tool_call(self, *args, **kwargs):
+            if kwargs["status"] == "succeeded":
+                raise InjectedAuditFailure("injected successful audit failure")
+            return super().record_tool_call(*args, **kwargs)
+
+    database = Database(f"sqlite:///{tmp_path / 'atomic-audit.db'}")
+    repository = FailingSuccessfulAuditRepository(database)
+    repository.create_schema()
+    repository.seed_demo_data()
+
+    with pytest.raises(InjectedAuditFailure):
+        AuthorizedToolExecutor(repository).invoke(
+            "draft_handoff", {"customer_id": "C001", "reason": "需要人工沟通"}
+        )
+
+    with database.session() as session:
+        assert list(session.scalars(select(PendingAction))) == []
+    assert repository.list_tickets("C001") == []
+    assert repository.list_tool_calls()[-1].status == "rejected"
+
+
+def test_competing_submit_and_cancel_cannot_create_conflicting_terminal_state(repo) -> None:
+    tools = AuthorizedToolExecutor(repo)
+    draft = tools.invoke("draft_handoff", {"customer_id": "C001", "reason": "并发终态校验"})
+    transition_barrier = Barrier(2)
+
+    def synchronize_updates(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith("UPDATE PENDING_ACTIONS"):
+            transition_barrier.wait(timeout=5)
+
+    event.listen(repo.database.engine, "before_cursor_execute", synchronize_updates)
+    results = []
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(tools.submit_confirmed_action, draft["action_id"], "C001"),
+                pool.submit(tools.cancel_pending_action, draft["action_id"], "C001"),
+            ]
+            for future in futures:
+                try:
+                    results.append(future.result(timeout=10))
+                except InvalidActionState:
+                    pass
+    finally:
+        event.remove(repo.database.engine, "before_cursor_execute", synchronize_updates)
+
+    with repo.database.session() as session:
+        action = session.get(PendingAction, draft["action_id"])
+    tickets = repo.list_tickets("C001")
+    statuses = {result["status"] for result in results}
+    assert statuses != {"submitted", "cancelled"}
+    if action.status == "submitted":
+        assert len(tickets) == 1
+    else:
+        assert action.status == "cancelled"
+        assert tickets == []
+
+
+@pytest.mark.parametrize(
+    ("customer_id", "order_id"),
+    [("missing-customer", None), ("C001", "missing-order")],
+)
+def test_sqlite_enforces_pending_action_foreign_keys(repo, customer_id, order_id) -> None:
+    with pytest.raises(IntegrityError):
+        repo.create_pending_action(
+            customer_id=customer_id,
+            action_type="handoff",
+            reason="invalid reference",
+            order_id=order_id,
+        )
 
 
 def test_search_products_returns_customer_visible_product(repo) -> None:
