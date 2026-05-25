@@ -1,9 +1,17 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
 from smart_cs.infrastructure.database import Database
 from smart_cs.infrastructure.repositories import SqlRepository
 from smart_cs.tools.executor import AuthorizedToolExecutor
+
+
+SEED_SCRIPT = Path(__file__).parents[2] / "scripts" / "seed_demo_data.py"
 
 
 @pytest.fixture
@@ -109,3 +117,23 @@ def test_search_products_returns_customer_visible_product(repo) -> None:
     result = tools.invoke("search_products", {"query": "跑鞋"})
 
     assert result["products"][0]["name"] == "轻量跑鞋"
+
+
+def test_seed_script_creates_default_sqlite_parent_directory(tmp_path) -> None:
+    clean_cwd = tmp_path / "clean-project"
+    clean_cwd.mkdir()
+    environment = os.environ.copy()
+    environment.pop("SMART_CS_DATABASE_URL", None)
+
+    completed = subprocess.run(
+        [sys.executable, str(SEED_SCRIPT)],
+        cwd=clean_cwd,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert (clean_cwd / "data" / "smart_cs.db").exists()
+    assert "C001" in completed.stdout
+    assert "O1001" in completed.stdout
