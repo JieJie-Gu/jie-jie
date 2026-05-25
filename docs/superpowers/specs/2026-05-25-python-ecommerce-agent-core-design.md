@@ -1,240 +1,184 @@
-# Python 电商客服多 Agent 核心重建设计
+# Python 电商客服多 Agent 面试型工程设计
 
-## 1. 背景与结论
+## 1. 项目定位
 
-项目目标是建设一个可持续二次开发的、多模态电商客服多 Agent 系统。
-首期建立文本与图片客服闭环：用户能够以文字或图片咨询，运营人员能够以统一的 Markdown 知识模型导入文本文件与图片，系统通过可引用证据回答并尽量减少人工接管。
+本项目定位为：**面向电商客服场景的多模态多 Agent 决策系统**，用于展示 AI 应用 / Agent 开发工程师岗位相关的核心能力：
 
-现有 `python-impl` 规模较小、工作树干净，适合作为 Python 实现落点；但当前代码属于演示骨架，不能直接作为长期内核：
+- Supervisor 多 Agent 编排与职责划分。
+- 受控工具调用与有副作用动作的确认门禁。
+- 基于 Milvus 的文本 RAG 检索、引用生成与质量评估。
+- 售后场景中的用户图片证据理解与多 Agent 协作。
+- 可追踪的执行日志、测试和设计取舍。
 
-- `Supervisor`、工具层、内存存储与 RAG 尚未形成一致的业务执行链路。
-- 工单使用内存实现，缺少可替换 Repository 与可审计持久化。
-- RAG 使用演示性哈希嵌入，示例数据偏金融而非电商。
-- 没有测试体系、明确领域模型或可执行的多模态消息契约。
+项目不以面试现场演示或建设完整客服产品为目标。首期实现必须满足以下约束：
 
-决定采用的方案是：**在 `smart-cs-multi-agent/python-impl` 内重建清晰的分层结构，保留 FastAPI、Supervisor 多 Agent 和 Tool/MCP 可扩展方向，不保持当前内部组织或 API 兼容性。**
+- 一周内能够理解代码、运行主要场景、解释架构决策和复述关键实现。
+- 简历陈述必须与实际代码、测试和评估结果一致，不使用未测量的准确率或性能数字。
+- 功能数量服从可解释性，保留面试可讨论的主链路，移除不必要的页面和产品化范围。
 
-## 2. 目标与首期范围
+现有 `smart-cs-multi-agent/python-impl` 是实现落点。当前演示骨架中的伪 RAG、内存业务状态和未连接的 Router 不作为新内核保留，但 FastAPI、Supervisor 图编排与工具扩展方向可以延续。
 
-### 2.1 目标
+## 2. 方案选择
 
-- 构建职责清晰、可单元测试、可替换基础设施的 Python 后端骨架。
-- 落实真实的 Supervisor 型多 Agent 执行链路，而非仅多个提示词文件。
-- 提供电商客服关键业务闭环与副作用安全门禁。
-- 提供 Canonical Markdown 与 Milvus 多模态检索链路，支撑可追溯知识回答。
-- 保持未来语音与真实电商系统接入的扩展空间。
+考虑过三种首期范围：
 
-### 2.2 首期实现范围
-
-- 文本与图片会话消息、原始资产保存和视觉解析。
-- 商品咨询。
-- 订单与物流查询。
-- 售后/退款申请：用户确认后受理并创建工单。
-- 转人工：用户确认后建立交接请求。
-- 多模态 RAG：文档/图片导入、Canonical Markdown、分块、Milvus 混合检索、引用与 Answerability Gate。
-- 轻量知识库管理页和最小聊天演示页。
-- SQLite 持久化、Repository 接口、演示数据脚本。
-- 以会话访问令牌隔离演示会话以及订单、物流、工单读取，防止已建立会话之间越界读取。
-- Swagger、自动化测试、AgentRun 与 ToolCall 审计记录。
-
-### 2.3 首期明确不做
-
-- 语音转写和视频输入。
-- 完整运营后台或人工客服工作台；首期页面仅服务知识管理与聊天演示。
-- 完整账号体系、后台角色管理或生产级身份认证；首期只提供会话作用域访问令牌。
-- 对接真实电商、物流或 CRM API。
-- 文档版本发布审批、GraphRAG、Text-to-SQL 与高级 RAG 策略实验。
-- 自主执行有副作用动作的开放式 Agent 循环。
-
-## 3. 重建策略
-
-采用原地重建而不是增量堆叠或新建平行实现：
-
-| 路径 | 取舍 | 结论 |
+| 方案 | 范围 | 取舍 |
 |---|---|---|
-| 在 `python-impl` 内建立新边界并替换演示实现 | 与目标落点一致，能形成长期结构；需要重写旧实现 | 采用 |
-| 保持平铺目录后追加 Agent 与 SQLite | 短期出效果快，但会继续积累耦合 | 不采用 |
-| 新建 `python-v2` 并保留旧实现 | 最干净，但产生两套 Python 维护对象 | 不采用 |
+| 文本最小版 | 多 Agent + 文本 RAG + 工具调用 | 最容易掌握，但不能体现原定的多模态特色 |
+| 平衡版 | 多 Agent + 文本 RAG + 用户售后图片证据理解 + 评估脚本 | 保留差异化场景，仍可在一周内掌握 |
+| 完整产品版 | 图片知识库、跨模态向量、文件上传转换、前端页面与产品化设施 | 范围过宽，面试中难以深入解释 |
 
-原有代码可作为业务场景和 Supervisor 思路参考；内存工单、伪 RAG 和金融示例不纳入首期新内核。
+采用 **平衡版**。
 
-## 4. 工程结构与依赖规则
+首期的“多模态”明确指：用户在售后对话中上传商品问题图片，系统提取结构化证据并辅助售后决策。首期不把图片存入知识库，不实现图文跨模态向量检索。
 
-目标目录结构：
+## 3. 首期范围
+
+### 3.1 必须完成
+
+- 文本消息和单张售后图片消息处理。
+- 商品咨询、订单/物流查询、售后退换申请、异常或明确请求下的人工交接。
+- Supervisor 型多 Agent 调度，`RouterAgent` 作为独立分析 Agent。
+- 标准售后动作的草稿、用户确认、自动提交与业务追踪单创建。
+- Markdown 知识库的文本 RAG：分块、Milvus 混合检索、RRF、引用和可回答性判断。
+- `VisionAgent` 对用户会话图片的结构化证据提取。
+- SQLite 业务持久化、LocalAssetStorage 图片保存、AgentRun/ToolCall 审计记录。
+- 演示数据脚本、RAG 评估脚本、关键自动化测试。
+- 面向面试复习的架构说明、设计决策和实测结果记录。
+
+### 3.2 明确不做
+
+- 知识库管理网页、聊天演示网页或人工客服工作台。
+- PDF、DOCX 等文件上传转换流程；首期知识材料直接维护为 Markdown。
+- 知识库图片、图片向量索引、图文共享向量或图片检索。
+- 语音、视频和 OCR 文档导入流水线。
+- 真实电商、物流、支付或 CRM API 接入。
+- 账号体系、生产鉴权、部署扩缩容和运营后台。
+- GraphRAG、Text-to-SQL、HyDE、Cross-Encoder、ColBERT、Web 搜索校正等扩展检索策略。
+- 自主循环执行退款、赔付、建单或转人工等副作用。
+
+这些内容可以作为后续扩展方向讨论，但不得写成首期已经实现的能力。
+
+## 4. 可交付成果
+
+首期交付不是页面，而是可验证、可讲述的工程资产：
 
 ```text
-python-impl/
-  pyproject.toml
-  src/smart_cs/
-    main.py
-    config.py
-
-    api/
-      routers/
-        conversations.py
-        catalogs.py
-        knowledge.py
-        assets.py
-        operations.py
-      schemas/
-      dependencies.py
-
-    domain/
-      models.py
-      enums.py
-      repositories.py
-      errors.py
-
-    application/
-      conversation_service.py
-      knowledge_service.py
-      asset_service.py
-      agent_runtime.py
-      dto.py
-
-    agents/
-      state.py
-      supervisor.py
-      router.py
-      specialists/
-        product.py
-        order.py
-        logistics.py
-        after_sales.py
-        handoff.py
-        knowledge.py
-        vision.py
-      guardrails.py
-
-    tools/
-      registry.py
-      specifications.py
-      handlers.py
-
-    rag/
-      loaders.py
-      markdown.py
-      sentence_window.py
-      retrieval.py
-      answerability.py
-      types.py
-
-    infrastructure/
-      database.py
-      repositories/
-      llm.py
-      assets.py
-      vision.py
-      embeddings.py
-      milvus.py
-      observability.py
-
-  web/                       # 薄 UI：知识管理页与聊天演示页
-  tests/
-    unit/
-    integration/
-    api/
-  scripts/
-    seed_demo_data.py
-    evaluate_rag.py
+1. 可运行的 FastAPI 后端接口与 Swagger 调试入口
+2. 多 Agent 核心执行链路及工具安全门禁
+3. Markdown 测试知识库和电商演示业务数据
+4. Milvus 文本混合检索及引用返回
+5. 用户图片售后证据处理链路
+6. tests/ 自动化测试
+7. scripts/evaluate_rag.py 评估输出
+8. 架构说明、简历表述草稿与面试问题清单
 ```
 
-依赖方向必须保持单向：
+接口和 Swagger 用于本地验证实现，不作为面试现场演示承诺。
+
+## 5. 架构总览
+
+系统采用 **Supervisor 型多 Agent 架构**。`SupervisorAgent` 是最终编排者，`RouterAgent` 是独立的意图与风险分析子 Agent；两者不得合并。
 
 ```text
-api -> application -> domain
-agents -> domain + tools interfaces
-tools handlers -> domain repository interfaces
-infrastructure -> domain interfaces
-main/config -> application + infrastructure 装配
-```
-
-约束如下：
-
-- `domain` 不依赖 FastAPI、LangGraph、SQLAlchemy、SQLite 或具体 LLM SDK。
-- `api` 只承担请求校验、依赖获取、调用应用用例和响应序列化。
-- `application` 负责一次会话回合的事务、Agent 编排调用、状态变更与日志保存。
-- `agents` 输出结构化判断、计划、工具请求和候选答复，不直接操作数据库。
-- `rag` 负责知识转换后的索引、检索、引用和证据充分性判断，不查询实时订单事实。
-- `tools` 是 Agent 使用业务能力的唯一入口，并对风险动作实施权限与确认控制。
-- `infrastructure` 提供 SQLite Repository、LocalAssetStorage、Milvus 与 Provider 适配器，可被替换。
-- `web` 仅调用 API 并渲染状态，不保存业务规则或 Agent 逻辑。
-
-## 5. 多 Agent 模型与职责
-
-### 5.1 架构类型
-
-系统采用 **Supervisor 型多 Agent 架构**。`SupervisorAgent` 是主编排 Agent，拥有理解、规划、调度、协调和结果汇总职责；`RouterAgent` 保持为独立分析型子 Agent，提供结构化的路由建议但不取得最终调度权。
-
-```text
-User Message
+User Message (+ optional after-sales image)
+  -> ConversationService
   -> SupervisorAgent
-       -> RouterAgent
-       -> SupervisorAgent.plan
+       -> VisionAgent            # 仅当本轮包含图片
+       -> RouterAgent            # 分析意图、实体、风险、建议 Agent
+       -> SupervisorAgent.plan   # 决定实际执行步骤和工具权限
             -> ProductAgent
-            -> OrderAgent
-            -> LogisticsAgent
-            -> AfterSalesAgent
-            -> HandoffAgent
+            -> OrderAgent        # 同时处理物流查询
             -> KnowledgeAgent
-            -> VisionAgent
+            -> AfterSalesAgent
+            -> HandoffAgent      # 仅在满足接入条件时
        -> ResponseGuardAgent
        -> SupervisorAgent.synthesize
-  -> Assistant Message
+  -> Assistant Reply + citations + pending action + audit summary
 ```
 
-### 5.2 Agent 职责
+核心边界：
 
-| Agent | 职责 | 允许的业务能力 |
+- 知识回答依赖 RAG 证据。
+- 订单、物流、售后进度等实时业务事实依赖工具，不由 RAG 推断。
+- 用户图片只作为当前会话证据，不能作为公共知识事实。
+- 副作用动作必须在用户确认后由受控工具执行。
+- 人工接入应作为异常路径，而不是标准售后默认路径。
+
+## 6. Agent 职责
+
+| Agent | 核心职责 | 可用能力 |
 |---|---|---|
-| `SupervisorAgent` | 理解整体请求；调用 Router；制定一个或多个专业 Agent 的执行顺序；限制工具范围；汇总回复 | 调度与汇总，不直接写业务数据 |
-| `RouterAgent` | 识别单意图/多意图、实体、置信度、风险信号，返回建议 Agent | 无业务副作用工具 |
-| `ProductAgent` | 商品信息、规格、库存咨询 | `search_products`, `get_product` |
-| `OrderAgent` | 用户自身订单状态查询 | `get_order` |
-| `LogisticsAgent` | 配送轨迹、预计送达和物流异常解释 | `get_order`, `get_shipment` |
-| `AfterSalesAgent` | 退货、退款和售后诉求处理；结合 `KnowledgeAgent` 返回的政策证据生成动作 | `get_order`, `draft_after_sales`, `submit_after_sales` |
-| `HandoffAgent` | 转人工申请与交接摘要生成 | `draft_handoff`, `confirm_handoff` |
-| `KnowledgeAgent` | 检索政策、FAQ、商品说明和图片知识，基于证据形成答复片段 | `retrieve_knowledge` |
-| `VisionAgent` | 理解知识库图片或用户会话图片，输出 OCR、Markdown 描述、结构化属性与置信度 | 读取授权图片资产，无业务副作用 |
-| `ResponseGuardAgent` | 检查隐私泄露、无依据事实、越权承诺和未确认执行 | 审查，不执行业务动作 |
+| `SupervisorAgent` | 理解用户请求；调用 Router；制定多步计划；授权工具；汇总最终答案 | 调度与汇总，不直接写业务数据 |
+| `RouterAgent` | 输出意图、实体、置信度、风险信号和建议 Agent | 无副作用工具，无最终派发权 |
+| `ProductAgent` | 回答商品基本信息、规格和演示库存问题 | `search_products`, `get_product` |
+| `OrderAgent` | 查询订单状态和物流轨迹 | `get_order`, `get_shipment` |
+| `KnowledgeAgent` | 检索售后政策、FAQ、商品说明，生成带引用的证据片段 | `retrieve_knowledge` |
+| `VisionAgent` | 对用户上传的售后图片提取现象、部位、可见问题和置信度 | 读取当前消息图片，无业务副作用 |
+| `AfterSalesAgent` | 综合订单事实、政策引用和图片证据，生成或提交售后申请 | `draft_after_sales`, `submit_after_sales` |
+| `HandoffAgent` | 在争议、失败、证据不可判定或用户明确要求时生成交接记录 | `draft_handoff`, `confirm_handoff` |
+| `ResponseGuardAgent` | 校验引用、承诺、隐私和未确认副作用风险 | 审查，不执行业务动作 |
 
-### 5.3 多 Agent 协作示例
+`OrderAgent` 首期同时承担物流查询，避免为了概念完整而增加一个仅转发工具的 `LogisticsAgent`。后续若物流异常处理形成独立复杂流程，再拆分为专业 Agent。
 
-请求：
+## 7. 关键业务流程
+
+### 7.1 政策知识问答
 
 ```text
-我买的鞋还没收到，明天就要出差了，没到的话帮我退掉。
+用户：退货需要在几天内申请？
+  -> SupervisorAgent
+  -> RouterAgent: knowledge_query
+  -> KnowledgeAgent: 查询重写、元数据过滤、Milvus 检索、RRF
+  -> ResponseGuardAgent: 校验回答被引用支持
+  -> 返回政策结论和引用章节
 ```
 
-执行链路：
+### 7.2 订单及物流查询
 
 ```text
-SupervisorAgent
-  -> RouterAgent:
-       intents = [logistics_query, conditional_refund]
-       risk_flags = [refund_requires_confirmation]
-  -> SupervisorAgent.plan:
-       step 1: LogisticsAgent 查询物流事实
-       step 2: AfterSalesAgent 说明退款条件并生成待确认动作（如用户当前已明确申请）
+用户：我的订单 O1001 到哪了？
+  -> RouterAgent: order_query + logistics_query
+  -> OrderAgent: get_order + get_shipment
   -> ResponseGuardAgent
-  -> SupervisorAgent 汇总物流状态和下一步确认方式
+  -> 返回工具获得的实时事实
 ```
 
-这一设计允许多个专业 Agent 按序协作，但不允许子 Agent 自主绕过 Supervisor 或确认门禁执行退款、建单或转人工。
+该流程不得使用知识库文档猜测具体订单状态。
 
-图片售后请求可以增加视觉和知识证据节点：
+### 7.3 图片售后与自动受理
 
 ```text
-用户上传开胶照片并询问退款
-  -> SupervisorAgent 调用 VisionAgent 提取本次会话图片证据
-  -> RouterAgent 识别 after_sales 意图
-  -> KnowledgeAgent 检索质量问题退货政策并返回引用
-  -> OrderAgent 校验订单事实
-  -> AfterSalesAgent 生成符合规则的售后申请摘要
-  -> 用户确认后自动受理，不默认转人工
+用户上传开胶照片，并请求退货
+  -> VisionAgent: evidence = {issue: "sole_detachment", confidence: 0.91}
+  -> RouterAgent: after_sales_request
+  -> OrderAgent: 校验订单及可售后状态
+  -> KnowledgeAgent: 检索质量问题退货政策
+  -> AfterSalesAgent: draft_after_sales
+  -> ResponseGuardAgent: 检查证据、政策和待确认状态
+  -> 回复售后摘要并要求用户确认
+
+用户确认
+  -> SupervisorAgent 校验 pending action
+  -> AfterSalesAgent: submit_after_sales
+  -> 创建 AfterSalesRequest 与 Ticket
+  -> 返回受理编号
 ```
 
-## 6. 领域模型与状态
+图片识别置信度低、订单不匹配或证据与用户描述冲突时，系统优先要求补充信息或补拍图片，而不是立即转人工。
+
+### 7.4 人工交接
+
+仅以下场景进入 `HandoffAgent`：
+
+- 用户明确要求人工客服。
+- 规则未覆盖或产生敏感争议。
+- 图片/业务/政策证据补充后仍冲突。
+- 工具或模型服务失败导致无法安全继续。
+
+标准售后符合规则且用户确认后自动受理，以降低不必要的人工参与率。
+
+## 8. 领域状态与数据模型
 
 首期核心实体：
 
@@ -242,7 +186,6 @@ SupervisorAgent
 Customer
 Conversation
 Message
-AttachmentRef
 Asset
 Product
 Order
@@ -250,9 +193,7 @@ Shipment
 AfterSalesRequest
 HandoffRequest
 Ticket
-KnowledgeBase
 KnowledgeDocument
-KnowledgeAsset
 KnowledgeChunk
 RetrievalLog
 AgentRun
@@ -263,45 +204,35 @@ ToolCall
 
 ```text
 Conversation:
-  active | pending_confirmation | pending_handoff | human_active | closed
+  active | pending_confirmation | pending_handoff | closed
 
 AfterSalesRequest:
   draft | pending_confirmation | submitted | rejected | completed
 
 HandoffRequest:
-  draft | confirmed | assigned | cancelled
+  draft | confirmed | closed
 
 Ticket:
   open | processing | resolved | closed
 
 Message.content_type:
-  text | image | audio | mixed
-
-KnowledgeDocument.conversion_status:
-  pending | processing | indexed | failed
-
-KnowledgeAsset.processing_status:
-  stored | parsing | indexed | failed
+  text | image | mixed
 
 EvidenceLevel:
-  authoritative_text | vision_generated | conversation_evidence
+  authoritative_text | conversation_evidence
 ```
 
-`Message` 设计中包含 `attachments: list[AttachmentRef]`。首期支持文本和图片附件；语音类型仅保留契约，不开放处理链路。
+边界说明：
 
-知识文档采用统一 Markdown 数据契约：
+- `authoritative_text` 是维护在 Markdown 知识库中的政策、FAQ 或商品说明，可支撑知识结论。
+- `conversation_evidence` 是用户本轮上传图片经 `VisionAgent` 得到的结构化证据，只服务当前会话和售后申请。
+- 图片原文件保存到本地资产目录，数据库只记录存储键、类型、校验值和与消息的关系。
 
-- 人工提交的 Markdown 以及由 PDF、TXT、DOCX 转换得到的正文标记为 `authoritative_text`，可以独立支撑政策和说明答复。
-- 知识库图片单独保存原图，`VisionAgent` 生成 OCR、Markdown 描述、结构化属性与置信度，标记为 `vision_generated`；低置信解析结果不能单独支撑最终结论。
-- 用户会话图片标记为 `conversation_evidence`，只用于当前咨询或售后事实，不自动写回公共知识库。
+## 9. 工具调用与安全门禁
 
-创建 `Conversation` 时生成不可预测的会话访问令牌，仅向调用方返回一次并在存储中保留哈希。除公开商品列表和健康检查外，客户侧会话及关联资源接口都要求该令牌。该机制只证明请求方持有当前演示会话，不验证其现实身份；首期服务不得作为公开生产客服入口部署，后续必须由正式登录与授权体系替代或补强。
+### 9.1 工具集合
 
-## 7. 工具层与动作安全
-
-### 7.1 工具分类
-
-只读工具可以在计划允许的 Agent 中直接执行：
+只读工具：
 
 ```text
 search_products
@@ -312,476 +243,443 @@ retrieve_knowledge
 get_ticket
 ```
 
-风险动作分为生成草稿和确认后执行：
+创建待确认动作的工具：
 
 ```text
 draft_after_sales
 draft_handoff
+```
 
+仅在用户显式确认后执行的副作用工具：
+
+```text
 submit_after_sales
 confirm_handoff
 ```
 
-### 7.2 工具执行规则
+### 9.2 执行规则
 
-`ToolRegistry` 负责：
+`ToolRegistry` 必须执行以下约束：
 
-- 注册工具描述、输入 schema、调用权限、风险等级和确认要求。
-- 校验当前 Specialist 是否被本轮 Supervisor 计划授权调用对应工具。
-- 校验参数格式及资源所属关系，例如订单是否属于当前客户。
-- 在执行前校验是否存在匹配且已确认的 pending action。
-- 保存每次工具调用的输入摘要、结果、耗时、成功状态和失败原因。
-- 将基础设施异常转化为稳定的业务错误，不向模型暴露内部异常详情。
+- 工具调用只能来自本轮 Supervisor 计划授权的 Agent。
+- 订单和物流工具必须校验资源属于当前演示客户上下文。
+- `submit_after_sales` 与 `confirm_handoff` 只能消费与当前会话匹配且用户已确认的 pending action。
+- 每次工具调用记录工具名、调用 Agent、输入摘要、结果状态、耗时和错误类型。
+- 模型输出不能绕过持久化状态检查直接宣称退款成功、已建单或已接入人工。
 
-知识检索与业务事实严格分流：
+首期是本地学习项目，不实现生产用户身份认证。API 通过演示会话绑定的 `customer_id` 执行业务资源隔离，并在文档中明确该机制不能作为生产认证方案。
 
-- `retrieve_knowledge` 仅检索政策、FAQ、商品说明及知识库图片证据。
-- 订单状态、库存、物流轨迹和售后进度必须通过业务工具读取，不能由 RAG 推断。
-- `AfterSalesAgent` 可以同时消费订单工具结果和 `KnowledgeAgent` 的政策引用，以自动受理标准售后申请。
+## 10. 文本 RAG 设计
 
-### 7.3 副作用闭环
+### 10.1 使用边界
 
-退款/退货请求：
+RAG 只处理稳定、可维护、可引用的文本知识：
 
 ```text
-用户提出售后请求
-  -> AfterSalesAgent 调用 draft_after_sales
-  -> 保存草稿与待确认动作
-  -> 回复申请摘要和确认提示
-  -> Conversation = pending_confirmation
-
-用户明确确认
-  -> Supervisor 验证 pending action
-  -> AfterSalesAgent 调用 submit_after_sales
-  -> 创建/更新 AfterSalesRequest 与 Ticket
-  -> 返回受理编号
+售后政策
+配送规则
+FAQ
+商品规格说明
 ```
 
-`Ticket` 表示业务追踪记录，不等于人工接管。标准退货/退款在规则满足且用户确认后由系统自动受理；仅在规则不覆盖、证据冲突、系统故障、敏感争议或用户明确要求时，才进入 `HandoffRequest`。任何模型输出都不能替代确认状态校验。
+RAG 不处理订单状态、物流轨迹、库存变化、售后处理进度或用户上传图片。图片证据由 `VisionAgent` 直接输出给当前工作流消费。
 
-## 8. 请求数据流
+### 10.2 数据准备
 
-核心对话端点每轮执行：
+首期知识材料直接以 Markdown 文件维护：
 
 ```text
-POST /api/conversations/{id}/messages
-  -> 校验会话可接收消息
-  -> 持久化用户 Message 与可选图片 Asset
-  -> application 加载会话、最近消息、客户可见业务上下文
-  -> SupervisorAgent 启动 AgentRun
-       -> 如存在图片，VisionAgent 返回当前会话视觉证据
-       -> RouterAgent 返回意图、实体、建议 Agent 与风险信号
-       -> SupervisorAgent 生成有序执行计划和授权工具集
-       -> SpecialistAgent(s) 生成工具请求并消费工具结果
-       -> ResponseGuardAgent 审查候选回复与证据
-       -> SupervisorAgent 汇总最终回复
-  -> application 原子保存助手 Message、状态变更、AgentRun、ToolCall
-  -> 返回本轮结果
+data/knowledge/
+  after_sales_policy.md
+  shipping_policy.md
+  product_guide.md
+  faq.md
 ```
 
-回复包含可调试但不暴露内部推理的执行摘要：
-
-```json
-{
-  "reply": "您的订单当前运输中，预计送达时间以最新物流轨迹为准。",
-  "conversation_status": "active",
-  "run_id": "run_xxx",
-  "agents_invoked": [
-    "SupervisorAgent",
-    "RouterAgent",
-    "LogisticsAgent",
-    "ResponseGuardAgent"
-  ],
-  "citations": [],
-  "pending_action": null
-}
-```
-
-## 9. 多模态 RAG 主链路
-
-### 9.1 使用边界
-
-RAG 负责可沉淀、可引用的知识：
+每个文档保留以下可过滤元数据：
 
 ```text
-售后政策、物流规则、FAQ、商品说明、尺码表、知识库图片解析内容
-```
-
-RAG 不负责实时业务事实：
-
-```text
-库存数量、用户订单状态、当前物流轨迹、售后处理进度
-```
-
-实时事实只能通过受控业务工具查询。复合问题由 `SupervisorAgent` 编排，例如图片售后请求同时调用 `VisionAgent`、`KnowledgeAgent`、`OrderAgent` 与 `AfterSalesAgent`。
-
-### 9.2 数据加载与统一 Markdown
-
-首期知识入库路径：
-
-```text
-知识库管理页上传
-  -> LocalAssetStorage 保存原始文件或原始图片
-  -> Loader / Converter / VisionProvider
-       Markdown          -> 规范化为 Canonical Markdown
-       PDF/TXT/DOCX      -> 提取文本与结构并转换为 Canonical Markdown
-       Image             -> OCR + Markdown 描述 + 结构化元数据 + confidence
-  -> SQL 保存 KnowledgeDocument / KnowledgeAsset / 元数据
-  -> 分块、Embedding、Milvus 索引
-```
-
-统一索引输入是 Markdown 文本和元数据，而不是原始二进制文件。图片原件保存在 `LocalAssetStorage`，其视觉解析 Markdown 用于文本检索，原图向量用于跨模态检索。每条文档或资产元数据至少包含：
-
-```text
-knowledge_base_id
-document_id / asset_id
-source_type
-storage_key
+document_id
+title
+category
+product_type
+status
+source_path
 section_path
-evidence_level
-confidence
-document_status
-checksum
-citation_metadata
 ```
 
-### 9.3 分块与上下文窗口
+首期不建设上传和格式转换流水线。未来接入 PDF 或其他文本文件时，仍应先转换为相同的 Canonical Markdown 契约，再进入以下检索链路。
 
-首期只使用以下两项，不加入递归分块或语义分块：
+### 10.3 分块策略
+
+分块仅采用已确认的两步策略：
 
 ```text
 MarkdownHeaderTextSplitter
-  -> 依据 Markdown 标题切出带 section_path 的章节文档
+  -> 按 Markdown 标题保留章节结构和 section_path
 
 Sentence Window Metadata
-  -> 在章节内按句子生成基础检索节点
-  -> 给每个句子节点记录前后句窗口
+  -> 在章节内建立句子级检索节点
+  -> 为每个节点保存前后句窗口上下文
 ```
 
-Milvus 与 BM25 检索索引的是定位精确的句子节点；向 LLM 提供上下文时，将命中句子替换为其窗口文本，并保留文档标题、章节路径和资产引用。这样在检索阶段减少主题稀释，在回答阶段避免断章取义。
+检索匹配句子节点，生成回答前用窗口上下文替换命中句，以降低主题稀释和断章取义。
 
-### 9.4 Embedding 与 Milvus 索引
+### 10.4 Milvus 混合检索
 
-代码依赖 Provider 接口，运行时可通过配置接入本地或云端 HTTP 服务，自动化测试使用 fake provider：
+首期只需要文本 Embedding Provider，不引入多模态 Embedding Provider：
 
 ```text
+LLMProvider
+  -> Router、Supervisor、查询重写、回答生成及 Guard
+
 VisionProvider
-  -> 图片 OCR、Markdown 描述、属性和置信度
+  -> 用户售后图片证据提取
 
 TextEmbeddingProvider
-  -> Markdown 句子节点与文本 query 向量
-
-MultimodalEmbeddingProvider
-  -> 原始图片、文本节点与文本/图片 query 的共享空间向量
+  -> Markdown 节点和文本 query 的 dense vector
 
 VectorStore
   -> Milvus 实现
 ```
 
-Milvus 是首期 RAG 的必需依赖，collection 至少承载：
+Milvus collection 支持：
 
 ```text
-text_dense_vector       # 文本语义召回
-multimodal_dense_vector # 图文共享空间召回
-text_sparse_vector      # BM25 关键词召回
+text_dense_vector   # 文本语义召回
+text_sparse_vector  # BM25 关键词召回
 raw_text
-metadata fields         # knowledge_base、document_status、evidence_level 等过滤字段
+window_text
+metadata fields     # category、product_type、status、section_path 等
 ```
 
-Milvus 的 BM25 sparse 检索和 multi-vector hybrid search 能在同一检索层组合 sparse、文本 dense 与图片 dense 结果，并使用 RRF 合并排名。首期不保留“Milvus 不可用时仅靠 SQLite 检索并继续回答”的降级路径；Embedding 或 Milvus 不可用时，知识回答报告依赖故障并进入安全兜底。
+Milvus 与 Embedding 是知识问答链路的必需依赖。依赖不可用时，应返回知识服务暂时不可用，不使用不完整的临时检索结果生成政策结论。
 
-文本提问生成 `text_dense_vector` 查询向量、共享空间文本查询向量以及 BM25 文本查询；带图片的提问还会生成共享空间图片查询向量，并将视觉解析出的 Markdown 作为查询辅助信息。因此图片不仅通过 OCR 文本被召回，也可以通过原图与文本/图片之间的跨模态相似度被召回。
+### 10.5 查询增强与排序
 
-### 9.5 查询增强与检索
-
-查询增强只实现两项：
+查询增强仅实现：
 
 ```text
 Query Rewrite
-  -> 将口语化提问转换为适合知识检索的短查询
+  -> 把口语化问题改写成简洁检索 query
 
 Metadata Filter
-  -> 由允许字段生成过滤条件，例如 knowledge_base、category、
-     document_status、evidence_level、product_type
+  -> 基于允许字段生成过滤条件
 ```
 
-元数据过滤必须经过白名单与值校验，不能将模型生成的任意表达式直接交给 Milvus。
+元数据过滤字段和值必须经过白名单校验，模型不得直接生成任意数据库表达式。
 
-`KnowledgeAgent` 的检索流程：
+检索流程：
 
 ```text
-用户问题 / 图片解析证据
+用户问题
   -> Query Rewrite
   -> Metadata Filter
-  -> 并行召回
-       Milvus text dense search
-       Milvus multimodal dense search
-       Milvus BM25 sparse search
-  -> RRF 融合排序
-  -> Sentence Window 上下文替换与去重
+  -> Milvus dense search + BM25 sparse search
+  -> RRF 融合
+  -> Sentence Window 上下文替换
   -> Answerability Gate
-  -> 基于引用生成答复片段
+  -> 基于引用生成回答
 ```
 
-首期不实现多查询分解、HyDE、Step-back、Cross-Encoder、RankLLM、ColBERT、C-RAG Web 搜索、Text-to-SQL 或 GraphRAG。
-
-### 9.6 RRF 与 Answerability Gate
-
-重排策略只采用 `RRF`，不加入权重学习或模型二次排序：
+重排只使用 RRF：
 
 ```text
-final_score(result) = sum(1 / (k + rank_in_each_retrieval_list))
+final_score(result) = sum(1 / (k + rank_in_each_result_list))
 ```
 
-证据可靠性不修改 RRF 分数，而由 `Answerability Gate` 在生成前判定：
+### 10.6 Answerability Gate
 
-- `authoritative_text` 可以独立支撑知识答复。
-- 高置信 `vision_generated` 可以参与回答和引用。
-- 低置信 `vision_generated` 不能单独支撑退款条件、赔付或商品事实结论，应要求补充信息或图片。
-- `conversation_evidence` 只支撑当前会话中的图片事实，必须结合政策知识或业务工具后才能产生售后动作。
-- 检索结果不足、冲突或依赖服务故障时不得生成无依据答复。
+回答生成前进行证据判断：
 
-为了降低人工客服接管率，证据不足但可以补全的场景优先澄清，例如请求订单号、补拍照片或确认图片识别内容；只有补全仍不足、发生争议或用户明确要求时才转人工。
+- 检索到可支撑结论的 `authoritative_text` 时，才生成政策或说明答案并附引用。
+- 证据不足时，回复缺少的信息或建议进一步确认，不虚构政策。
+- 售后决策必须同时具有业务工具事实和政策依据；涉及图片时，还需要可接受置信度的会话证据。
+- 检索结果冲突、依赖故障或风险动作未确认时，不输出已经执行的结论。
 
-### 9.7 RAG 评估
+### 10.7 评估
 
-首期仅以四项 RAG 质量指标作为检索与生成评估目标：
+`scripts/evaluate_rag.py` 使用固定的电商问答评测集，记录每次实际运行结果。首期只报告四项指标：
 
 | 指标 | 含义 |
 |---|---|
-| `Faithfulness` 忠实度 | 回答是否基于检索上下文，不添加无证据结论 |
-| `Answer Relevancy` 答案相关性 | 回答是否解决用户提出的问题 |
-| `Context Recall` 上下文召回 | 应被检索到的相关证据是否被召回 |
-| `Context Precision` 上下文精确 | 被召回的上下文中相关证据所占比例 |
+| `Faithfulness` 忠实度 | 回答是否得到检索上下文支持 |
+| `Answer Relevancy` 答案相关性 | 回答是否解决输入问题 |
+| `Context Recall` 上下文召回 | 标注相关证据是否被检索到 |
+| `Context Precision` 上下文精确 | 返回上下文中相关证据的占比 |
 
-人工客服接管率与标准售后自动受理率属于整体业务指标，不替代上述 RAG 指标；错误自动执行率和无依据回答必须作为安全约束持续观察。
+简历只能填写实际评估得到并可复现的结果。若尚未执行评估，应表述为“构建评估链路”，不能声明已达到某个数字。
 
-## 10. API 与页面设计
+## 11. 图片证据处理
 
-首期接口：
+图片链路刻意保持简单，服务售后 Agent 协作而不是展示图像检索能力：
 
 ```text
-POST /api/conversations
-GET  /api/conversations/{id}
-POST /api/conversations/{id}/messages
-GET  /api/conversations/{id}/messages
-GET  /api/conversations/{id}/runs
+POST conversation message + image
+  -> LocalAssetStorage 保存图片
+  -> VisionAgent / VisionProvider
+       visible_issue
+       affected_part
+       extracted_text (optional)
+       evidence_summary
+       confidence
+       needs_clarification
+  -> 保存为当前 Message 的 conversation_evidence
+  -> AfterSalesAgent 消费该证据
+```
 
-GET  /api/products
-GET  /api/conversations/{id}/orders/{order_no}
-GET  /api/conversations/{id}/shipments/{order_no}
-GET  /api/conversations/{id}/tickets/{ticket_no}
+示例结构化输出：
 
-POST /api/knowledge-bases
-POST /api/knowledge-bases/{id}/documents
-GET  /api/knowledge-bases/{id}/documents
-GET  /api/knowledge-bases/{id}/chunks
-POST /api/knowledge-bases/{id}/retrieval-tests
-GET  /api/retrieval-logs
+```json
+{
+  "visible_issue": "sole_detachment",
+  "affected_part": "right_shoe_forefoot",
+  "evidence_summary": "鞋底前掌边缘可见分离",
+  "confidence": 0.91,
+  "needs_clarification": false
+}
+```
 
-POST /api/demo/seed
-GET  /health
+安全约束：
+
+- 图片识别内容不能独立决定退款、赔付或商品真伪。
+- 低置信或不清晰图片先要求补拍或用户确认识别内容。
+- 图片不会自动进入公共知识库或向量索引。
+- 测试使用固定结果的 fake vision provider，真实模型接入由配置替换。
+
+## 12. 工程结构
+
+目标目录：
+
+```text
+python-impl/
+  pyproject.toml
+  data/
+    knowledge/
+    assets/conversations/
+    evaluation/
+  src/smart_cs/
+    main.py
+    config.py
+    api/
+      routers/
+        conversations.py
+        operations.py
+      schemas.py
+      dependencies.py
+    domain/
+      models.py
+      enums.py
+      repositories.py
+      errors.py
+    application/
+      conversation_service.py
+      knowledge_service.py
+      agent_runtime.py
+      dto.py
+    agents/
+      state.py
+      supervisor.py
+      router.py
+      product.py
+      order.py
+      knowledge.py
+      vision.py
+      after_sales.py
+      handoff.py
+      guardrails.py
+    tools/
+      registry.py
+      specifications.py
+      handlers.py
+    rag/
+      indexing.py
+      sentence_window.py
+      retrieval.py
+      answerability.py
+      types.py
+    infrastructure/
+      database.py
+      repositories/
+      assets.py
+      providers.py
+      milvus.py
+      observability.py
+  tests/
+    unit/
+    integration/
+    api/
+  scripts/
+    seed_demo_data.py
+    index_knowledge.py
+    evaluate_rag.py
+```
+
+依赖方向：
+
+```text
+api -> application -> domain
+agents -> domain + tools interfaces + rag interfaces
+tools handlers -> domain repository interfaces
+rag -> provider/vector store interfaces
+infrastructure -> domain/rag interfaces
+main/config -> application + infrastructure 装配
 ```
 
 约束：
 
-- 本期不承诺兼容原演示接口。
-- `POST /api/conversations` 返回一次性明文 `access_token`；服务端只保存哈希。
-- 客户聊天页发送消息时支持文本与图片附件。
-- 除 `GET /api/products`、知识管理演示接口、`POST /api/demo/seed` 与 `GET /health` 外，首期客户侧接口要求 `X-Conversation-Token`，并校验令牌属于路径中的会话。
-- 查询订单、物流和工单时还必须校验资源属于会话绑定的客户。
-- `POST /api/demo/seed` 仅在 demo 配置下启用，并返回用于演示会话的测试客户引用；首期会话令牌不构成生产身份认证。
-- Swagger 展示结构化请求、响应和确认动作示例。
-- 知识管理接口首期属于演示管理入口；部署到非本地环境前必须补充正式管理员认证。
+- `domain` 不依赖 FastAPI、LangGraph、SQLAlchemy 或具体模型 SDK。
+- `application` 管理一次消息处理的事务、Agent 调用与日志保存。
+- `agents` 不直接访问数据库或 Milvus，只调用受控接口。
+- `rag` 不读取实时订单、物流或售后状态。
+- `infrastructure` 承载 SQLite、Milvus、本地资产与可替换 Provider 实现。
 
-首期提供两个薄页面，页面不包含业务决策：
+## 13. API 与基础设施
 
-```text
-知识库管理页
-  -> 上传 Markdown / PDF / TXT / DOCX / 图片
-  -> 查看 Canonical Markdown、图片解析结果、置信度、chunk 与索引状态
-  -> 输入问题测试召回、引用和 Answerability
-
-聊天演示页
-  -> 创建或恢复演示会话
-  -> 发送文本与图片
-  -> 展示 Agent 回复、引用、图片解析摘要和待确认动作
-  -> 确认或取消标准售后申请
-  -> 显示是否进入人工处理
-```
-
-## 11. 持久化与基础设施
-
-首期使用 SQLite + SQLAlchemy，并通过领域定义的接口访问数据：
+首期提供最小 API：
 
 ```text
-ConversationRepository
-MessageRepository
-AssetRepository
-CatalogRepository
-OrderRepository
-ShipmentRepository
-AfterSalesRepository
-HandoffRepository
-TicketRepository
-KnowledgeRepository
-RetrievalLogRepository
-AgentRunRepository
-ToolCallRepository
+POST /api/conversations
+POST /api/conversations/{id}/messages       # 支持可选图片
+GET  /api/conversations/{id}/messages
+GET  /api/conversations/{id}/runs
+POST /api/conversations/{id}/actions/confirm
+GET  /health
 ```
 
-SQLite 表：
+知识数据准备通过脚本完成，而不是管理页面或管理 API：
 
 ```text
-customers
-conversations
-messages
-assets
-products
-orders
-shipments
-knowledge_bases
-knowledge_documents
-knowledge_assets
-knowledge_chunks
-retrieval_logs
-after_sales_requests
-handoff_requests
-tickets
-agent_runs
-tool_calls
+python scripts/seed_demo_data.py
+python scripts/index_knowledge.py
+python scripts/evaluate_rag.py
 ```
 
-设计边界：
+基础设施：
 
-- `infrastructure.repositories` 提供 SQLite 实现，业务层只面向 Repository 接口。
-- `conversations` 保存会话访问令牌哈希而非明文；验证由 API dependency 统一处理。
-- `LocalAssetStorage` 实现 `AssetStorage` 接口，首期把原始文档和图片保存到 `data/assets/knowledge/` 与 `data/assets/conversations/`；领域层只保存相对存储键和元数据，不直接操作文件路径。
-- `knowledge_documents` 保存原始来源、Canonical Markdown 和转换状态；`knowledge_assets` 保存图片解析信息、证据等级、置信度和原始资产引用；`knowledge_chunks` 保存句子节点、窗口文本与 Milvus 标识。
-- Milvus 承载文本 dense、多模态 dense 和 BM25 sparse 索引，并按元数据过滤后执行 RRF hybrid search。
-- 演示数据由 `scripts/seed_demo_data.py` 幂等导入。
-- `LLMProvider`、`VisionProvider`、`TextEmbeddingProvider` 与 `MultimodalEmbeddingProvider` 通过配置接入 HTTP 模型服务，测试使用 fake provider。
-- 模型与 Milvus 的具体部署可在环境配置中替换；核心应用不绑定云厂商或本地模型进程。
-
-## 12. 错误处理与降级
-
-| 情况 | 系统行为 |
+| 能力 | 首期实现 |
 |---|---|
-| 意图置信度不足 | Supervisor 回复澄清问题或提供人工入口 |
-| 会话令牌缺失或不匹配 | 返回未授权，不执行 Agent 或业务查询 |
-| 订单不存在或不属于会话客户 | 返回统一的不可查询提示，不泄露资源是否属于其他客户 |
-| 工具参数无效 | 拒绝调用，写入失败 ToolCall，返回可纠正提示 |
-| 文档转换或图片解析失败 | 保留原始资产及失败状态，管理页可查看失败原因，不建立可查询索引 |
-| 图片解析置信度不足 | 在会话中请求补图或确认解析内容；不能据此直接承诺售后结论 |
-| Embedding 或 Milvus 不可用 | 知识链路返回不可用状态，不以不完整关键词结果继续生成知识答复 |
-| Repository/数据库失败 | 回滚本轮副作用，返回暂时无法处理或转人工提示 |
-| LLM 不可用/输出不可解析 | 不伪造业务结果；只读查询可使用确定性模板回复，否则降级 |
-| Guard 检测越权承诺或隐私风险 | 阻止候选回复，生成安全答复并记录 AgentRun 风险状态 |
-| 用户未确认副作用操作 | 保留 pending action，仅返回确认提示 |
+| 业务持久化 | SQLite + Repository 接口 |
+| 图片保存 | `LocalAssetStorage`，仅保存会话图片 |
+| 知识向量库 | Milvus，文本 dense + BM25 sparse |
+| 模型调用 | 配置化 `LLMProvider`、`VisionProvider`、`TextEmbeddingProvider` |
+| 测试替身 | fake providers 和隔离测试数据 |
+| 可观测性 | `AgentRun`、`ToolCall`、`RetrievalLog` |
 
-对外响应不暴露堆栈、SQL、模型提示内容或内部调用凭据。
+首期本地运行，不承诺公网部署安全。未来若提供公开服务，必须增加正式身份认证、管理员权限和资产访问保护。
 
-## 13. 测试与验收
+## 14. 测试与验收
 
-### 13.1 自动化测试
+### 14.1 自动化测试
 
 ```text
 tests/unit/
-  RouterAgent 输出解析、多意图与风险信号
-  SupervisorAgent 计划和 Specialist 顺序控制
-  Specialist 工具请求及允许工具约束
-  ToolRegistry 参数校验、授权与确认门禁
-  ResponseGuardAgent 越权承诺与隐私拦截
-  MarkdownHeaderTextSplitter 与 Sentence Window Metadata
-  Query Rewrite 与 metadata filter 白名单校验
-  RRF 融合和 Answerability Gate 证据规则
+  RouterAgent 意图、实体与风险结构化输出
+  SupervisorAgent 多步计划与授权工具集合
+  ToolRegistry 的参数校验与确认门禁
+  ResponseGuardAgent 对无引用结论和越权承诺的拦截
+  MarkdownHeader + Sentence Window 处理
+  Metadata Filter 白名单与 RRF 融合
+  Answerability Gate 判定
 
 tests/integration/
-  SQLite Repository 的读写与资源可见性
-  会话访问令牌哈希保存与校验
-  LocalAssetStorage 文档/图片存取
-  文本文件 -> Canonical Markdown -> chunk -> Milvus 索引
-  图片 -> VisionProvider -> 文本/多模态索引
-  Milvus dense/BM25/multimodal hybrid retrieval + RRF
-  Message -> AgentRun -> ToolCall 持久化
-  物流查询并追加售后草稿的组合链路
-  确认后提交售后并生成 Ticket
+  SQLite Repository 与会话业务数据隔离
+  Markdown -> chunk -> Milvus dense/BM25 索引和检索
+  Conversation image -> VisionProvider -> conversation evidence
+  售后草稿 -> 用户确认 -> 售后单与 Ticket
+  AgentRun、ToolCall 和 RetrievalLog 持久化
 
 tests/api/
-  知识库上传、转换状态、检索测试和引用结果
-  创建会话和发送商品咨询
-  上传商品图片或破损图片并获得证据化答复
-  订单与物流查询
-  无效会话令牌及跨客户资源查询拒绝
-  退款请求 -> 待确认 -> 受理编号
-  转人工请求 -> 待确认 -> 交接状态
-  降级和未授权资源查询
+  商品咨询
+  订单/物流查询
+  政策问题带引用回答
+  上传破损图片形成待确认售后申请
+  确认后自动受理
+  请求转人工
+  知识或模型依赖不可用时的安全回复
 ```
 
-所有 Agent、视觉与 Embedding 单元测试使用固定响应的 fake provider，不依赖公网服务或实际模型密钥。Milvus 集成测试使用隔离测试 collection；没有运行 Milvus 时可被测试环境显式跳过，但完整验收必须执行该组测试。
+### 14.2 验收场景
 
-### 13.2 首期验收场景
-
-| 场景 | 预期结果 |
+| 场景 | 应证明的能力 |
 |---|---|
-| “这双跑鞋有没有 42 码？” | `ProductAgent` 查询演示商品/库存并基于数据回复 |
-| “订单 O1001 到哪了？” | `OrderAgent`/`LogisticsAgent` 返回该客户可见物流事实 |
-| 管理页上传售后政策 Markdown/PDF | 转换、分块、Milvus 索引成功，检索测试返回引用 |
-| 管理页上传商品尺码图片 | 原图保留，视觉摘要可见，可由文本问题跨模态检索 |
-| 用户上传开胶照片并申请退货 | 图片作为本次会话证据，政策由 `KnowledgeAgent` 引用，生成待确认售后动作 |
-| “订单 O1001 一直没到，我要退货” | 多 Agent 顺序处理并创建待确认售后动作 |
-| 用户确认上述申请 | `submit_after_sales` 执行，产生售后记录和工单号 |
-| “转人工”并确认 | 建立人工交接请求，不由模型虚构已接入客服 |
-| 模型尝试承诺立即退款 | `ResponseGuardAgent` 拦截或改写 |
+| “七天无理由退货有哪些条件？” | 文本 RAG、RRF、引用和忠实回答 |
+| “订单 O1001 到哪里了？” | 实时事实通过工具而非 RAG 查询 |
+| “订单没到，我想退款” | 多 Agent 顺序协调与副作用确认 |
+| 上传鞋底开胶图片并申请退货 | 图片证据、政策证据和售后工具协作 |
+| 用户确认售后申请 | 自动受理并产生 Ticket，不默认转人工 |
+| 用户明确要求人工 | 有控制的 Handoff 流程 |
+| 模型输出无依据退款承诺 | Guard 拦截 |
 
-### 13.3 质量指标
+验收完成后记录实际测试和 RAG 评估结果，为简历和面试陈述提供可核查依据。
 
-RAG 指标：
+## 15. 一周掌握路径
+
+实施和学习以能够解释为终点，而不是仅完成代码：
+
+| 天数 | 实现重点 | 必须能说明的问题 |
+|---|---|---|
+| 第 1 天 | 领域模型、目录结构、演示数据和 SQLite Repository | 为什么领域、应用、基础设施分层 |
+| 第 2 天 | Supervisor、Router、状态与简单 Specialist | Router 为什么独立但不拥有调度权 |
+| 第 3 天 | ToolRegistry、订单/物流查询、副作用确认 | Agent 如何安全调用真实业务动作 |
+| 第 4 天 | Markdown 分块、Milvus dense/BM25、RRF 与引用 | RAG 与实时工具数据如何分流 |
+| 第 5 天 | VisionAgent 与图片售后流程 | 多模态如何服务决策而不扩大幻觉风险 |
+| 第 6 天 | Guard、测试、日志和 RAG 评估 | 如何验证答案可信与动作安全 |
+| 第 7 天 | 重跑场景、整理实测结果、准备简历和面试问答 | 架构取舍、缺陷和后续演进 |
+
+一周结束时，应能从入口追踪一次请求的 Agent、工具、检索、状态变化和安全判断，而不是只会运行接口。
+
+## 16. 简历与面试陈述边界
+
+### 16.1 可陈述能力
+
+完成首期并取得实测结果后，可以围绕以下内容形成简历描述：
 
 ```text
-Faithfulness
-Answer Relevancy
-Context Recall
-Context Precision
+设计并实现电商客服 Supervisor 多 Agent 系统，将意图路由、知识检索、
+订单工具调用、图片售后证据分析与安全审查拆分为可追踪执行链路；
+使用 Milvus dense + BM25 混合检索与 RRF 融合构建带引用的 Markdown
+知识问答，并通过 Faithfulness、Answer Relevancy、Context Recall、
+Context Precision 评估结果验证效果；对退换货等副作用采用用户确认
+门禁与审计记录。
 ```
 
-整体业务指标：
+其中任何“提升百分比”“准确率”或“降低人工率”的数字，只有在脚本实际产出、评测集定义清楚并可复跑时才能补入。
 
-```text
-人工客服接管率
-标准售后自动受理率
-错误自动执行率
-无依据回答率
-```
+### 16.2 应准备的面试问题
 
-人工接管率应尽可能低，但不能通过降低 `Answerability Gate` 或副作用确认门禁来获得。
+- 单 Agent + tools 与 Supervisor 多 Agent 的取舍是什么？
+- `RouterAgent` 与 `SupervisorAgent` 为什么分离？
+- RAG 为什么只用于政策知识，而不用于订单和物流状态？
+- 为什么选 MarkdownHeader + Sentence Window，而没有采用更多分块算法？
+- 为什么采用 dense + BM25 + RRF，而不是更复杂重排？
+- 图片证据为什么不直接触发退款？
+- 如何降低人工参与率，同时防止错误自动执行？
+- 如何评估 RAG，如何避免在简历中夸大效果？
 
-## 14. 后续演进
+## 17. 后续演进
 
-首期完成后，按独立增量扩展：
+首期掌握后再按实际需要增加：
 
-1. 将 `LocalAssetStorage` 替换为 S3 兼容对象存储实现，并补充正式管理鉴权。
-2. 增加真实电商/物流/工单 API 的 Repository 或 Tool handler 实现。
-3. 在评测证明有效后，再引入高级检索策略或 GraphRAG，不把实验策略提前放入主链路。
-4. 扩展语音输入与客服工作台。
-5. 在只读查询场景内评估有限 ReAct 工具循环；退款、建单、转人工继续保持确认后执行。
+1. 文本文件到 Canonical Markdown 的导入转换。
+2. 真实电商与物流 API 工具适配。
+3. 正式认证与可公开部署的管理能力。
+4. 图片知识库和跨模态检索，仅在业务需要与评估证明收益后引入。
+5. 更复杂检索或语音输入，不提前放入首期主链路。
 
-## 15. 设计决策摘要
+## 18. 决策摘要
 
 - 开发落点：`smart-cs-multi-agent/python-impl`。
-- 工程方式：在现有目录内重建分层结构，不维护原演示接口兼容。
-- 交付定位：可持续二次开发的后端骨架。
-- 输入范围：首期支持文本和图片，语音仅预留内容类型。
-- 业务范围：商品、订单、物流、售后/退款、转人工与工单。
-- 执行架构：Supervisor 型多 Agent；`RouterAgent` 保持独立子 Agent，Supervisor 持有最终规划和调度权。
-- RAG 主链路：Canonical Markdown + `MarkdownHeaderTextSplitter` + Sentence Window Metadata + Query Rewrite + Metadata Filter + Milvus 文本/多模态/BM25 召回 + RRF + Answerability Gate。
-- 存储与工具：Repository 接口 + SQLite + `LocalAssetStorage` + Milvus；Agent 仅通过受控工具访问业务能力。
-- 模型边界：配置化 HTTP Provider 接口，支持 LLM、视觉、文本 Embedding 与多模态 Embedding；测试使用 fake provider。
-- 风险治理：副作用两阶段确认；最终回复统一经 `ResponseGuardAgent`。
-- 人工参与策略：符合规则且经用户确认的标准售后自动受理，只有异常、争议、失败或明确要求才接入人工。
-- 交付界面：REST API、Swagger、知识库管理页、聊天演示页、演示数据脚本与自动化测试。
+- 岗位定位：AI 应用 / Agent 开发工程师面试型项目。
+- 时间边界：首期一周内可以理解、运行、测试并完成面试复习。
+- 架构：Supervisor 型多 Agent；`RouterAgent` 独立提供分析建议，Supervisor 最终调度。
+- 多模态范围：只处理用户售后图片证据，不做图片知识库或跨模态检索。
+- RAG：Markdown + `MarkdownHeaderTextSplitter` + Sentence Window Metadata + Query Rewrite + Metadata Filter + Milvus dense/BM25 + RRF + Answerability Gate。
+- 工具安全：副作用草稿与用户确认后执行；标准售后自动受理，异常场景才转人工。
+- 交付：后端 API、Swagger、脚本、测试、评估结果与面试材料，不提供前端页面。
+- 陈述原则：只写已实现、已测试和已测量的能力与指标。
 
-## 16. 技术参考
+## 19. 技术参考
 
 - Milvus BM25 Function: <https://milvus.io/docs/bm25-function.md>
 - Milvus Multi-Vector Hybrid Search: <https://milvus.io/docs/multi-vector-search.md>
