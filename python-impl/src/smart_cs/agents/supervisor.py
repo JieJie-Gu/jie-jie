@@ -42,6 +42,12 @@ def validate_decision(decision: SupervisorDecision) -> SupervisorDecision:
     if required_agent is not None and decision.agents[-1] != required_agent:
         raise ValueError(f"Action {decision.action} requires {required_agent} as final agent")
 
+    if decision.action == "draft_after_sales" and decision.agents[-2:] != [
+        "OrderAgent",
+        "AfterSalesAgent",
+    ]:
+        raise ValueError("Action draft_after_sales requires OrderAgent before AfterSalesAgent")
+
     if decision.action in WRITE_ACTIONS and not decision.requires_confirmation:
         return decision.model_copy(update={"requires_confirmation": True})
     return decision

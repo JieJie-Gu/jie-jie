@@ -1,4 +1,5 @@
 import pytest
+from langgraph.types import Command
 
 from smart_cs.application.agent_runtime import AgentRuntime
 from smart_cs.infrastructure.database import Database
@@ -48,4 +49,18 @@ def test_rejected_after_sales_confirmation_cancels_without_ticket(runtime_and_re
 
     assert completed["status"] == "completed"
     assert completed["reply"] == "已取消本次申请。"
+    assert repository.list_tickets("C001") == []
+
+
+def test_truthy_non_boolean_approval_does_not_submit_action(runtime_and_repo) -> None:
+    runtime, repository = runtime_and_repo
+    conversation_id = "conv-string-false"
+
+    runtime.invoke(conversation_id, "C001", "订单 O1001 鞋底开胶，申请退款")
+    state = runtime.graph.invoke(
+        Command(resume={"approved": "false"}),
+        config={"configurable": {"thread_id": conversation_id}},
+    )
+
+    assert state["business_result"]["status"] != "submitted"
     assert repository.list_tickets("C001") == []

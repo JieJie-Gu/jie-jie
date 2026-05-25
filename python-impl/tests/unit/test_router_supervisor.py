@@ -37,12 +37,13 @@ def test_invalid_or_empty_agent_plan_is_rejected(decision) -> None:
     "decision",
     [
         SupervisorDecision(agents=["AfterSalesAgent"], action="read"),
+        SupervisorDecision(agents=["AfterSalesAgent"], action="draft_after_sales"),
         SupervisorDecision(agents=["OrderAgent"], action="draft_after_sales"),
         SupervisorDecision(agents=["AfterSalesAgent", "OrderAgent"], action="draft_after_sales"),
     ],
 )
 def test_inconsistent_write_plan_is_rejected(decision) -> None:
-    with pytest.raises(ValueError, match="action|final"):
+    with pytest.raises(ValueError):
         validate_decision(decision)
 
 

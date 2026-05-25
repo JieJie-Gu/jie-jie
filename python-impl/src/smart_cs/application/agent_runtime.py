@@ -135,7 +135,7 @@ class AgentRuntime:
                 "reply": self.guard.render(action),
             }
         )
-        if bool(approval.get("approved")):
+        if approval.get("approved") is True:
             result = self.executor.submit_confirmed_action(action["action_id"], state["customer_id"])
             return {"business_result": result}
         result = self.executor.cancel_pending_action(action["action_id"], state["customer_id"])
