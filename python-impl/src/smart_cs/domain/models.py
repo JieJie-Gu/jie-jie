@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from smart_cs.domain.enums import ActionStatus, TicketStatus
@@ -22,6 +22,14 @@ class Customer(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
@@ -50,9 +58,22 @@ class Order(Base):
 
 class PendingAction(Base):
     __tablename__ = "pending_actions"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_pending_actions_idempotency_key"),
+        Index(
+            "uq_pending_actions_active_conversation",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("conversation_id IS NOT NULL AND status = 'pending_confirmation'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), nullable=False, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversations.id"), nullable=True, index=True
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     action_type: Mapped[str] = mapped_column(String(32), nullable=False)
     order_id: Mapped[str | None] = mapped_column(ForeignKey("orders.id"), nullable=True)
     reason: Mapped[str] = mapped_column(Text, nullable=False)

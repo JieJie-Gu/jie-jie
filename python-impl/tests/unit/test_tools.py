@@ -62,6 +62,77 @@ def test_handoff_is_a_draft_until_confirmed(repo) -> None:
     assert repo.list_tickets("C001") == []
 
 
+def test_replayed_draft_with_same_idempotency_key_reuses_pending_action(repo) -> None:
+    tools = AuthorizedToolExecutor(repo)
+    arguments = {
+        "customer_id": "C001",
+        "order_id": "O1001",
+        "reason": "鞋底开胶",
+        "idempotency_key": "request-draft-replay",
+    }
+
+    first = tools.invoke("draft_after_sales", arguments)
+    repeated = tools.invoke("draft_after_sales", arguments)
+
+    with repo.database.session() as session:
+        drafts = list(session.scalars(select(PendingAction)))
+    assert repeated["action_id"] == first["action_id"]
+    assert len(drafts) == 1
+
+
+def test_idempotency_key_does_not_expose_another_customers_draft(repo) -> None:
+    tools = AuthorizedToolExecutor(repo)
+    tools.invoke(
+        "draft_handoff",
+        {"customer_id": "C001", "reason": "需要人工沟通", "idempotency_key": "private-request"},
+    )
+
+    with pytest.raises(ToolPermissionError):
+        tools.invoke(
+            "draft_handoff",
+            {"customer_id": "C002", "reason": "其他请求", "idempotency_key": "private-request"},
+        )
+
+
+def test_conversation_scoped_draft_requires_bound_owner(repo) -> None:
+    tools = AuthorizedToolExecutor(repo)
+    tools.claim_conversation("owned-conversation", "C001")
+
+    with pytest.raises(ToolPermissionError):
+        tools.invoke(
+            "draft_handoff",
+            {
+                "customer_id": "C002",
+                "reason": "越权请求",
+                "conversation_id": "owned-conversation",
+                "idempotency_key": "wrong-owner-request",
+            },
+        )
+
+
+def test_competing_conversation_claim_allows_only_one_owner(repo) -> None:
+    claim_barrier = Barrier(2)
+
+    def claim(customer_id):
+        claim_barrier.wait(timeout=5)
+        repo.claim_conversation("claimed-once", customer_id)
+        return customer_id
+
+    winners = []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(claim, customer_id) for customer_id in ("C001", "C002")]
+        for future in futures:
+            try:
+                winners.append(future.result(timeout=10))
+            except ToolPermissionError:
+                pass
+
+    assert len(winners) == 1
+    loser = "C002" if winners[0] == "C001" else "C001"
+    with pytest.raises(ToolPermissionError):
+        repo.claim_conversation("claimed-once", loser)
+
+
 def test_submit_confirmed_action_is_idempotent(repo) -> None:
     tools = AuthorizedToolExecutor(repo)
     draft = tools.invoke(

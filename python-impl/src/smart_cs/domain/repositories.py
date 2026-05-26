@@ -1,13 +1,21 @@
 from contextlib import AbstractContextManager
 from typing import Any, Protocol
 
-from smart_cs.domain.models import Order, PendingAction, Product, Ticket, ToolCall
+from smart_cs.domain.models import Conversation, Order, PendingAction, Product, Ticket, ToolCall
 
 
 class CustomerFactsRepository(Protocol):
     """Business-specific persistence operations used by authorised tools."""
 
     def transaction(self) -> AbstractContextManager[Any]: ...
+
+    def claim_conversation(
+        self, conversation_id: str, customer_id: str, *, session: Any | None = None
+    ) -> Conversation: ...
+
+    def require_conversation_owner(
+        self, conversation_id: str, customer_id: str, *, session: Any | None = None
+    ) -> Conversation: ...
 
     def customer_exists(self, customer_id: str, *, session: Any | None = None) -> bool: ...
 
@@ -21,9 +29,21 @@ class CustomerFactsRepository(Protocol):
         action_type: str,
         reason: str,
         order_id: str | None = None,
+        conversation_id: str | None = None,
+        idempotency_key: str | None = None,
         *,
         session: Any | None = None,
     ) -> PendingAction: ...
+
+    def get_pending_action(
+        self, conversation_id: str, customer_id: str, *, session: Any | None = None
+    ) -> PendingAction | None: ...
+
+    def get_latest_action(
+        self, conversation_id: str, customer_id: str, *, session: Any | None = None
+    ) -> PendingAction | None: ...
+
+    def get_ticket_for_action(self, action_id: str, *, session: Any | None = None) -> Ticket | None: ...
 
     def submit_pending_action(
         self, action_id: str, customer_id: str, *, session: Any | None = None

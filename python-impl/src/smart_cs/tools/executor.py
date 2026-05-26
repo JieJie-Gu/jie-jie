@@ -4,7 +4,7 @@ from collections.abc import Callable
 from time import perf_counter
 from typing import Any
 
-from smart_cs.domain.enums import ActionType, ToolCallStatus
+from smart_cs.domain.enums import ActionStatus, ActionType, ToolCallStatus
 from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
 from smart_cs.domain.models import Order, PendingAction, Product, Ticket
 from smart_cs.domain.repositories import CustomerFactsRepository
@@ -42,6 +42,34 @@ class AuthorizedToolExecutor:
             )
         return self._audited_call(tool_name, provided_arguments, operation)
 
+    def claim_conversation(self, conversation_id: str, customer_id: str) -> None:
+        arguments = {"conversation_id": conversation_id, "customer_id": customer_id}
+
+        def operation(session: Any) -> dict[str, Any]:
+            conversation = self.repository.claim_conversation(
+                conversation_id, customer_id, session=session
+            )
+            return {"conversation_id": conversation.id, "customer_id": conversation.customer_id}
+
+        self._audited_write_call("claim_conversation", arguments, operation)
+
+    def require_conversation_owner(self, conversation_id: str, customer_id: str) -> None:
+        self.repository.require_conversation_owner(conversation_id, customer_id)
+
+    def pending_action_for_conversation(
+        self, conversation_id: str, customer_id: str
+    ) -> dict[str, Any] | None:
+        action = self.repository.get_pending_action(conversation_id, customer_id)
+        return self._action_result(action) if action is not None else None
+
+    def latest_action_for_conversation(
+        self, conversation_id: str, customer_id: str
+    ) -> dict[str, Any] | None:
+        action = self.repository.get_latest_action(conversation_id, customer_id)
+        if action is None:
+            return None
+        return self._persisted_action_result(action)
+
     def submit_confirmed_action(self, action_id: str, customer_id: str) -> dict[str, Any]:
         arguments = {"action_id": action_id, "customer_id": customer_id}
 
@@ -73,27 +101,37 @@ class AuthorizedToolExecutor:
     def _draft_after_sales(self, arguments: dict[str, Any], session: Any) -> dict[str, Any]:
         customer_id = str(arguments["customer_id"])
         order_id = str(arguments["order_id"])
+        conversation_id = arguments.get("conversation_id")
+        if conversation_id is not None:
+            self.repository.require_conversation_owner(str(conversation_id), customer_id, session=session)
         self._owned_order(customer_id, order_id, session=session)
         action = self.repository.create_pending_action(
             customer_id=customer_id,
             action_type=ActionType.AFTER_SALES.value,
             order_id=order_id,
             reason=str(arguments["reason"]),
+            conversation_id=str(conversation_id) if conversation_id is not None else None,
+            idempotency_key=arguments.get("idempotency_key"),
             session=session,
         )
-        return self._action_result(action)
+        return self._persisted_action_result(action, session=session)
 
     def _draft_handoff(self, arguments: dict[str, Any], session: Any) -> dict[str, Any]:
         customer_id = str(arguments["customer_id"])
+        conversation_id = arguments.get("conversation_id")
+        if conversation_id is not None:
+            self.repository.require_conversation_owner(str(conversation_id), customer_id, session=session)
         if not self.repository.customer_exists(customer_id, session=session):
             raise ToolPermissionError("Customer is not available for handoff")
         action = self.repository.create_pending_action(
             customer_id=customer_id,
             action_type=ActionType.HANDOFF.value,
             reason=str(arguments["reason"]),
+            conversation_id=str(conversation_id) if conversation_id is not None else None,
+            idempotency_key=arguments.get("idempotency_key"),
             session=session,
         )
-        return self._action_result(action)
+        return self._persisted_action_result(action, session=session)
 
     def _owned_order(self, customer_id: str, order_id: str, session: Any | None = None) -> Order:
         order = self.repository.get_owned_order(customer_id, order_id, session=session)
@@ -186,6 +224,14 @@ class AuthorizedToolExecutor:
             "quantity": order.quantity,
             "total_cents": order.total_cents,
         }
+
+    def _persisted_action_result(
+        self, action: PendingAction, *, session: Any | None = None
+    ) -> dict[str, Any]:
+        ticket = None
+        if action.status == ActionStatus.SUBMITTED.value:
+            ticket = self.repository.get_ticket_for_action(action.id, session=session)
+        return self._action_result(action, ticket)
 
     @staticmethod
     def _action_result(action: PendingAction, ticket: Ticket | None = None) -> dict[str, Any]:

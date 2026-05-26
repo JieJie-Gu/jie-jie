@@ -22,6 +22,7 @@ class SupervisorDecision(BaseModel):
 class RuntimeState(TypedDict, total=False):
     conversation_id: str
     customer_id: str
+    request_id: str
     message: str
     route: dict[str, Any]
     decision: dict[str, Any]

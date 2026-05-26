@@ -6,11 +6,22 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import or_, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from smart_cs.domain.enums import ActionStatus, OrderStatus, TicketStatus
 from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
-from smart_cs.domain.models import Base, Customer, Order, PendingAction, Product, Ticket, ToolCall
+from smart_cs.domain.models import (
+    Base,
+    Conversation,
+    Customer,
+    Order,
+    PendingAction,
+    Product,
+    Ticket,
+    ToolCall,
+    utc_now,
+)
 from smart_cs.infrastructure.database import Database
 
 
@@ -55,6 +66,22 @@ class SqlRepository:
                     )
                 )
 
+    def claim_conversation(
+        self, conversation_id: str, customer_id: str, *, session: Session | None = None
+    ) -> Conversation:
+        if session is not None:
+            return self._claim_conversation(session, conversation_id, customer_id)
+        with self.transaction() as managed_session:
+            return self._claim_conversation(managed_session, conversation_id, customer_id)
+
+    def require_conversation_owner(
+        self, conversation_id: str, customer_id: str, *, session: Session | None = None
+    ) -> Conversation:
+        if session is not None:
+            return self._require_conversation_owner(session, conversation_id, customer_id)
+        with self.transaction() as managed_session:
+            return self._require_conversation_owner(managed_session, conversation_id, customer_id)
+
     def customer_exists(self, customer_id: str, *, session: Session | None = None) -> bool:
         if session is not None:
             return session.get(Customer, customer_id) is not None
@@ -89,25 +116,53 @@ class SqlRepository:
         action_type: str,
         reason: str,
         order_id: str | None = None,
+        conversation_id: str | None = None,
+        idempotency_key: str | None = None,
         *,
         session: Session | None = None,
     ) -> PendingAction:
-        action = PendingAction(
-            id=str(uuid4()),
-            customer_id=customer_id,
-            action_type=action_type,
-            order_id=order_id,
-            reason=reason,
-            status=ActionStatus.PENDING_CONFIRMATION.value,
-        )
         if session is not None:
-            session.add(action)
-            session.flush()
-            return action
+            return self._create_pending_action(
+                session,
+                customer_id=customer_id,
+                action_type=action_type,
+                reason=reason,
+                order_id=order_id,
+                conversation_id=conversation_id,
+                idempotency_key=idempotency_key,
+            )
         with self.transaction() as managed_session:
-            managed_session.add(action)
-            managed_session.flush()
-        return action
+            return self._create_pending_action(
+                managed_session,
+                customer_id=customer_id,
+                action_type=action_type,
+                reason=reason,
+                order_id=order_id,
+                conversation_id=conversation_id,
+                idempotency_key=idempotency_key,
+            )
+
+    def get_pending_action(
+        self, conversation_id: str, customer_id: str, *, session: Session | None = None
+    ) -> PendingAction | None:
+        if session is not None:
+            return self._get_pending_action(session, conversation_id, customer_id)
+        with self.transaction() as managed_session:
+            return self._get_pending_action(managed_session, conversation_id, customer_id)
+
+    def get_latest_action(
+        self, conversation_id: str, customer_id: str, *, session: Session | None = None
+    ) -> PendingAction | None:
+        if session is not None:
+            return self._get_latest_action(session, conversation_id, customer_id)
+        with self.transaction() as managed_session:
+            return self._get_latest_action(managed_session, conversation_id, customer_id)
+
+    def get_ticket_for_action(self, action_id: str, *, session: Session | None = None) -> Ticket | None:
+        if session is not None:
+            return session.scalar(select(Ticket).where(Ticket.action_id == action_id))
+        with self.transaction() as managed_session:
+            return managed_session.scalar(select(Ticket).where(Ticket.action_id == action_id))
 
     def submit_pending_action(
         self, action_id: str, customer_id: str, *, session: Session | None = None
@@ -165,6 +220,115 @@ class SqlRepository:
             managed_session.add(call)
             managed_session.flush()
         return call
+
+    @staticmethod
+    def _claim_conversation(session: Session, conversation_id: str, customer_id: str) -> Conversation:
+        session.execute(
+            sqlite_insert(Conversation)
+            .values(id=conversation_id, customer_id=customer_id, created_at=utc_now())
+            .on_conflict_do_nothing(index_elements=[Conversation.id])
+        )
+        return SqlRepository._require_conversation_owner(session, conversation_id, customer_id)
+
+    @staticmethod
+    def _require_conversation_owner(
+        session: Session, conversation_id: str, customer_id: str
+    ) -> Conversation:
+        conversation = session.get(Conversation, conversation_id)
+        if conversation is None or conversation.customer_id != customer_id:
+            raise ToolPermissionError("Conversation is not available to this customer")
+        return conversation
+
+    @staticmethod
+    def _create_pending_action(
+        session: Session,
+        *,
+        customer_id: str,
+        action_type: str,
+        reason: str,
+        order_id: str | None,
+        conversation_id: str | None,
+        idempotency_key: str | None,
+    ) -> PendingAction:
+        if conversation_id is None and idempotency_key is None:
+            action = PendingAction(
+                id=str(uuid4()),
+                customer_id=customer_id,
+                action_type=action_type,
+                order_id=order_id,
+                reason=reason,
+                status=ActionStatus.PENDING_CONFIRMATION.value,
+            )
+            session.add(action)
+            session.flush()
+            return action
+
+        now = utc_now()
+        session.execute(
+            sqlite_insert(PendingAction)
+            .values(
+                id=str(uuid4()),
+                customer_id=customer_id,
+                conversation_id=conversation_id,
+                idempotency_key=idempotency_key,
+                action_type=action_type,
+                order_id=order_id,
+                reason=reason,
+                status=ActionStatus.PENDING_CONFIRMATION.value,
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing()
+        )
+        if idempotency_key is not None:
+            action = session.scalar(
+                select(PendingAction).where(PendingAction.idempotency_key == idempotency_key)
+            )
+            if action is not None:
+                if (
+                    action.customer_id != customer_id
+                    or action.conversation_id != conversation_id
+                ):
+                    raise ToolPermissionError("Pending action is not available to this customer")
+                return action
+        if conversation_id is not None:
+            action = session.scalar(
+                select(PendingAction).where(
+                    PendingAction.conversation_id == conversation_id,
+                    PendingAction.customer_id == customer_id,
+                    PendingAction.status == ActionStatus.PENDING_CONFIRMATION.value,
+                )
+            )
+            if action is not None:
+                return action
+        raise InvalidActionState("Unable to create or recover pending action")
+
+    @classmethod
+    def _get_pending_action(
+        cls, session: Session, conversation_id: str, customer_id: str
+    ) -> PendingAction | None:
+        cls._require_conversation_owner(session, conversation_id, customer_id)
+        return session.scalar(
+            select(PendingAction).where(
+                PendingAction.conversation_id == conversation_id,
+                PendingAction.customer_id == customer_id,
+                PendingAction.status == ActionStatus.PENDING_CONFIRMATION.value,
+            )
+        )
+
+    @classmethod
+    def _get_latest_action(
+        cls, session: Session, conversation_id: str, customer_id: str
+    ) -> PendingAction | None:
+        cls._require_conversation_owner(session, conversation_id, customer_id)
+        return session.scalar(
+            select(PendingAction)
+            .where(
+                PendingAction.conversation_id == conversation_id,
+                PendingAction.customer_id == customer_id,
+            )
+            .order_by(PendingAction.created_at.desc(), PendingAction.id.desc())
+        )
 
     def _submit_pending_action(
         self, session: Session, action_id: str, customer_id: str

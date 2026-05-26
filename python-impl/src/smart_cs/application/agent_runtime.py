@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -13,7 +14,7 @@ from smart_cs.agents.router import RouterAgent, RoutingDecisionModel
 from smart_cs.agents.specialists import SpecialistDispatcher
 from smart_cs.agents.state import RouteAnalysis, RuntimeState, SupervisorDecision
 from smart_cs.agents.supervisor import PlanningDecisionModel, SupervisorAgent
-from smart_cs.domain.errors import ToolPermissionError
+from smart_cs.domain.enums import ActionStatus
 from smart_cs.tools.executor import AuthorizedToolExecutor
 
 
@@ -44,10 +45,16 @@ class AgentRuntime:
         self.graph = self._build_graph()
 
     def invoke(self, conversation_id: str, customer_id: str, message: str) -> dict[str, Any]:
+        self.executor.claim_conversation(conversation_id, customer_id)
+        pending_action = self.executor.pending_action_for_conversation(conversation_id, customer_id)
+        if pending_action is not None:
+            return self._pending_result(pending_action)
+
         result = self.graph.invoke(
             {
                 "conversation_id": conversation_id,
                 "customer_id": customer_id,
+                "request_id": f"{conversation_id}:{uuid4()}",
                 "message": message,
                 "route": {},
                 "decision": {},
@@ -62,13 +69,27 @@ class AgentRuntime:
         )
         return self._public_result(result)
 
-    def confirm(self, conversation_id: str, customer_id: str, *, approved: bool) -> dict[str, Any]:
+    def confirm(
+        self, conversation_id: str, customer_id: str, *, approved: bool | None = None
+    ) -> dict[str, Any]:
         config = self._config(conversation_id)
-        state = self.graph.get_state(config).values
-        if state.get("customer_id") != customer_id:
-            raise ToolPermissionError("Conversation is not available to this customer")
-        if state.get("pending_confirmation") is None:
+        self.executor.require_conversation_owner(conversation_id, customer_id)
+        if type(approved) is not bool:
+            raise ValueError("Confirmation requires boolean approval")
+
+        action = self.executor.pending_action_for_conversation(conversation_id, customer_id)
+        if action is None:
+            action = self.executor.latest_action_for_conversation(conversation_id, customer_id)
+        if action is None:
             raise ValueError("Conversation has no pending confirmation")
+        if action["status"] != ActionStatus.PENDING_CONFIRMATION.value:
+            return self._completed_result(action, self.graph.get_state(config).values)
+
+        state = self.graph.get_state(config).values
+        interrupted_action = state.get("pending_confirmation")
+        if interrupted_action is None or interrupted_action.get("action_id") != action["action_id"]:
+            result = self._transition_action(action["action_id"], customer_id, approved)
+            return self._completed_result(result, state)
 
         result = self.graph.invoke(Command(resume={"approved": approved}), config=config)
         return self._public_result(result)
@@ -110,6 +131,8 @@ class AgentRuntime:
             customer_id=state["customer_id"],
             route=RouteAnalysis.model_validate(state["route"]),
             decision=SupervisorDecision.model_validate(state["decision"]),
+            conversation_id=state["conversation_id"],
+            idempotency_key=state.get("request_id"),
         )
         return {
             "agents_invoked": execution.agents_invoked,
@@ -135,7 +158,9 @@ class AgentRuntime:
                 "reply": self.guard.render(action),
             }
         )
-        if approval.get("approved") is True:
+        if not isinstance(approval, dict) or type(approval.get("approved")) is not bool:
+            raise ValueError("Confirmation requires boolean approval")
+        if approval["approved"]:
             result = self.executor.submit_confirmed_action(action["action_id"], state["customer_id"])
             return {"business_result": result}
         result = self.executor.cancel_pending_action(action["action_id"], state["customer_id"])
@@ -151,6 +176,35 @@ class AgentRuntime:
     @staticmethod
     def _config(conversation_id: str) -> dict[str, dict[str, str]]:
         return {"configurable": {"thread_id": conversation_id}}
+
+    def _transition_action(
+        self, action_id: str, customer_id: str, approved: bool
+    ) -> dict[str, Any]:
+        if approved:
+            return self.executor.submit_confirmed_action(action_id, customer_id)
+        return self.executor.cancel_pending_action(action_id, customer_id)
+
+    def _pending_result(self, action: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": ActionStatus.PENDING_CONFIRMATION.value,
+            "pending_confirmation": action,
+            "reply": self.guard.render(action),
+        }
+
+    def _completed_result(
+        self, result: dict[str, Any], state: dict[str, Any]
+    ) -> dict[str, Any]:
+        reply = (
+            "已取消本次申请。"
+            if result["status"] == ActionStatus.CANCELLED.value
+            else self.guard.render(result)
+        )
+        return {
+            "status": "completed",
+            "reply": reply,
+            "result": result,
+            "agents_invoked": state.get("agents_invoked", []),
+        }
 
     @staticmethod
     def _public_result(state: dict[str, Any]) -> dict[str, Any]:
