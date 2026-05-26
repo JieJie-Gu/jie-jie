@@ -43,6 +43,15 @@ class CustomerFactsRepository(Protocol):
         self, conversation_id: str, customer_id: str, *, session: Any | None = None
     ) -> PendingAction | None: ...
 
+    def get_action(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        action_id: str,
+        *,
+        session: Any | None = None,
+    ) -> PendingAction: ...
+
     def get_ticket_for_action(self, action_id: str, *, session: Any | None = None) -> Ticket | None: ...
 
     def submit_pending_action(

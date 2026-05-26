@@ -10,7 +10,8 @@ from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError
 
 from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
-from smart_cs.domain.models import PendingAction
+from smart_cs.domain.enums import OrderStatus
+from smart_cs.domain.models import Order, PendingAction
 from smart_cs.infrastructure.database import Database
 from smart_cs.infrastructure.repositories import SqlRepository
 from smart_cs.tools.executor import AuthorizedToolExecutor
@@ -78,6 +79,47 @@ def test_replayed_draft_with_same_idempotency_key_reuses_pending_action(repo) ->
         drafts = list(session.scalars(select(PendingAction)))
     assert repeated["action_id"] == first["action_id"]
     assert len(drafts) == 1
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        (
+            "draft_after_sales",
+            {"customer_id": "C001", "order_id": "O1001", "reason": "改为换货"},
+        ),
+        ("draft_handoff", {"customer_id": "C001", "reason": "转人工"}),
+        (
+            "draft_after_sales",
+            {"customer_id": "C001", "order_id": "O1002", "reason": "鞋底开胶"},
+        ),
+    ],
+)
+def test_idempotency_key_rejects_different_action_payload(repo, tool_name, arguments) -> None:
+    with repo.database.session() as session:
+        session.add(
+            Order(
+                id="O1002",
+                customer_id="C001",
+                product_id="P1001",
+                status=OrderStatus.DELIVERED.value,
+                quantity=1,
+                total_cents=39900,
+            )
+        )
+    tools = AuthorizedToolExecutor(repo)
+    tools.invoke(
+        "draft_after_sales",
+        {
+            "customer_id": "C001",
+            "order_id": "O1001",
+            "reason": "鞋底开胶",
+            "idempotency_key": "immutable-operation",
+        },
+    )
+
+    with pytest.raises(InvalidActionState, match="Idempotency key"):
+        tools.invoke(tool_name, {**arguments, "idempotency_key": "immutable-operation"})
 
 
 def test_idempotency_key_does_not_expose_another_customers_draft(repo) -> None:

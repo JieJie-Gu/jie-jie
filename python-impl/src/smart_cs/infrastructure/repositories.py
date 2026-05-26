@@ -158,6 +158,19 @@ class SqlRepository:
         with self.transaction() as managed_session:
             return self._get_latest_action(managed_session, conversation_id, customer_id)
 
+    def get_action(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        action_id: str,
+        *,
+        session: Session | None = None,
+    ) -> PendingAction:
+        if session is not None:
+            return self._get_action(session, conversation_id, customer_id, action_id)
+        with self.transaction() as managed_session:
+            return self._get_action(managed_session, conversation_id, customer_id, action_id)
+
     def get_ticket_for_action(self, action_id: str, *, session: Session | None = None) -> Ticket | None:
         if session is not None:
             return session.scalar(select(Ticket).where(Ticket.action_id == action_id))
@@ -290,6 +303,14 @@ class SqlRepository:
                     or action.conversation_id != conversation_id
                 ):
                     raise ToolPermissionError("Pending action is not available to this customer")
+                if (
+                    action.action_type != action_type
+                    or action.order_id != order_id
+                    or action.reason != reason
+                ):
+                    raise InvalidActionState(
+                        "Idempotency key conflicts with another action payload"
+                    )
                 return action
         if conversation_id is not None:
             action = session.scalar(
@@ -329,6 +350,22 @@ class SqlRepository:
             )
             .order_by(PendingAction.created_at.desc(), PendingAction.id.desc())
         )
+
+    @classmethod
+    def _get_action(
+        cls, session: Session, conversation_id: str, customer_id: str, action_id: str
+    ) -> PendingAction:
+        cls._require_conversation_owner(session, conversation_id, customer_id)
+        action = session.scalar(
+            select(PendingAction).where(
+                PendingAction.id == action_id,
+                PendingAction.conversation_id == conversation_id,
+                PendingAction.customer_id == customer_id,
+            )
+        )
+        if action is None:
+            raise ToolPermissionError("Pending action is not available to this conversation")
+        return action
 
     def _submit_pending_action(
         self, session: Session, action_id: str, customer_id: str

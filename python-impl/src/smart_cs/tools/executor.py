@@ -70,6 +70,12 @@ class AuthorizedToolExecutor:
             return None
         return self._persisted_action_result(action)
 
+    def action_for_conversation(
+        self, conversation_id: str, customer_id: str, action_id: str
+    ) -> dict[str, Any]:
+        action = self.repository.get_action(conversation_id, customer_id, action_id)
+        return self._persisted_action_result(action)
+
     def submit_confirmed_action(self, action_id: str, customer_id: str) -> dict[str, Any]:
         arguments = {"action_id": action_id, "customer_id": customer_id}
 
@@ -114,7 +120,7 @@ class AuthorizedToolExecutor:
             idempotency_key=arguments.get("idempotency_key"),
             session=session,
         )
-        return self._persisted_action_result(action, session=session)
+        return self._draft_result(action, arguments, session=session)
 
     def _draft_handoff(self, arguments: dict[str, Any], session: Any) -> dict[str, Any]:
         customer_id = str(arguments["customer_id"])
@@ -131,7 +137,7 @@ class AuthorizedToolExecutor:
             idempotency_key=arguments.get("idempotency_key"),
             session=session,
         )
-        return self._persisted_action_result(action, session=session)
+        return self._draft_result(action, arguments, session=session)
 
     def _owned_order(self, customer_id: str, order_id: str, session: Any | None = None) -> Order:
         order = self.repository.get_owned_order(customer_id, order_id, session=session)
@@ -232,6 +238,19 @@ class AuthorizedToolExecutor:
         if action.status == ActionStatus.SUBMITTED.value:
             ticket = self.repository.get_ticket_for_action(action.id, session=session)
         return self._action_result(action, ticket)
+
+    def _draft_result(
+        self, action: PendingAction, arguments: dict[str, Any], *, session: Any
+    ) -> dict[str, Any]:
+        result = self._persisted_action_result(action, session=session)
+        requested_key = arguments.get("idempotency_key")
+        if (
+            arguments.get("conversation_id") is not None
+            and requested_key is not None
+            and action.idempotency_key != requested_key
+        ):
+            result["_canonical_pending"] = True
+        return result
 
     @staticmethod
     def _action_result(action: PendingAction, ticket: Ticket | None = None) -> dict[str, Any]:

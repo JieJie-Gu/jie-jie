@@ -48,14 +48,21 @@ class SpecialistDispatcher:
                 )
             )
 
-        result = results[-1]
+        result = dict(results[-1])
+        canonical_pending = result.pop("_canonical_pending", False)
+        if canonical_pending:
+            results = [result]
+            agents_invoked: list[str] = []
+        else:
+            results[-1] = result
+            agents_invoked = list(decision.agents)
         pending_confirmation = (
             result
             if decision.requires_confirmation and result.get("status") == "pending_confirmation"
             else None
         )
         return SpecialistExecution(
-            agents_invoked=list(decision.agents),
+            agents_invoked=agents_invoked,
             results=results,
             result=result,
             pending_confirmation=pending_confirmation,

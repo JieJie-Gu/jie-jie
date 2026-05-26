@@ -1,8 +1,13 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from time import sleep
+
 import pytest
 from sqlalchemy import select
 
 from smart_cs.application.agent_runtime import AgentRuntime
 from smart_cs.domain.errors import ToolPermissionError
+from smart_cs.domain.enums import ActionStatus
 from smart_cs.domain.models import PendingAction
 from smart_cs.infrastructure.database import Database
 from smart_cs.infrastructure.model_factory import RulesDecisionModel
@@ -42,7 +47,9 @@ def test_approved_after_sales_confirmation_submits_single_ticket(runtime_and_rep
     assert pending["reply"].endswith("已为您生成售后申请草稿，请确认后提交。")
     assert repository.list_tickets("C001") == []
 
-    completed = runtime.confirm("conv-1", "C001", approved=True)
+    completed = runtime.confirm(
+        "conv-1", "C001", pending["pending_confirmation"]["action_id"], approved=True
+    )
 
     assert completed["status"] == "completed"
     assert completed["reply"].startswith("售后申请已受理")
@@ -52,8 +59,10 @@ def test_approved_after_sales_confirmation_submits_single_ticket(runtime_and_rep
 def test_rejected_after_sales_confirmation_cancels_without_ticket(runtime_and_repo) -> None:
     runtime, repository = runtime_and_repo
 
-    runtime.invoke("conv-2", "C001", "订单 O1001 鞋底开胶，申请退款")
-    completed = runtime.confirm("conv-2", "C001", approved=False)
+    pending = runtime.invoke("conv-2", "C001", "订单 O1001 鞋底开胶，申请退款")
+    completed = runtime.confirm(
+        "conv-2", "C001", pending["pending_confirmation"]["action_id"], approved=False
+    )
 
     assert completed["status"] == "completed"
     assert completed["reply"] == "已取消本次申请。"
@@ -81,7 +90,9 @@ def test_conversation_owner_rejects_another_customer_without_losing_pending_acti
     with pytest.raises(ToolPermissionError):
         runtime.invoke(conversation_id, "C002", "需要人工协助")
 
-    completed = runtime.confirm(conversation_id, "C001", approved=True)
+    completed = runtime.confirm(
+        conversation_id, "C001", pending["pending_confirmation"]["action_id"], approved=True
+    )
     assert completed["result"]["action_id"] == pending["pending_confirmation"]["action_id"]
     assert len(actions(repository)) == 1
     assert len(repository.list_tickets("C001")) == 1
@@ -101,7 +112,9 @@ def test_new_message_while_pending_reuses_original_draft_and_confirmation_path(
     assert repeated["reply"] == original["reply"]
     assert len(actions(repository)) == 1
 
-    completed = runtime.confirm(conversation_id, "C001", approved=True)
+    completed = runtime.confirm(
+        conversation_id, "C001", original["pending_confirmation"]["action_id"], approved=True
+    )
     assert completed["result"]["action_id"] == original["pending_confirmation"]["action_id"]
 
 
@@ -129,8 +142,8 @@ def test_submitted_action_is_projected_consistently_when_confirmation_node_repla
     action_id = pending["pending_confirmation"]["action_id"]
     committed = runtime.executor.submit_confirmed_action(action_id, "C001")
 
-    replayed = runtime.confirm(conversation_id, "C001", approved=True)
-    repeated = runtime.confirm(conversation_id, "C001", approved=True)
+    replayed = runtime.confirm(conversation_id, "C001", action_id, approved=True)
+    repeated = runtime.confirm(conversation_id, "C001", action_id, approved=True)
 
     assert replayed["status"] == "completed"
     assert replayed["result"]["ticket_id"] == committed["ticket_id"]
@@ -146,12 +159,117 @@ def test_invalid_approval_payload_keeps_action_pending(runtime_and_repo, approve
     pending = runtime.invoke(conversation_id, "C001", "订单 O1001 鞋底开胶，申请退款")
     with pytest.raises(ValueError, match="boolean approval"):
         if approved is None:
-            runtime.confirm(conversation_id, "C001")
+            runtime.confirm(conversation_id, "C001", pending["pending_confirmation"]["action_id"])
         else:
-            runtime.confirm(conversation_id, "C001", approved=approved)
+            runtime.confirm(
+                conversation_id, "C001", pending["pending_confirmation"]["action_id"], approved=approved
+            )
 
     assert repository.list_tickets("C001") == []
     assert actions(repository)[0].status == "pending_confirmation"
 
-    completed = runtime.confirm(conversation_id, "C001", approved=True)
+    completed = runtime.confirm(
+        conversation_id, "C001", pending["pending_confirmation"]["action_id"], approved=True
+    )
     assert completed["result"]["action_id"] == pending["pending_confirmation"]["action_id"]
+
+
+def test_delayed_confirmation_retry_targets_original_action_not_new_pending(
+    runtime_and_repo,
+) -> None:
+    runtime, repository = runtime_and_repo
+    conversation_id = "conv-delayed-confirmation"
+
+    first = runtime.invoke(conversation_id, "C001", "订单 O1001 鞋底开胶，申请退款")
+    first_id = first["pending_confirmation"]["action_id"]
+    submitted = runtime.confirm(conversation_id, "C001", first_id, approved=True)
+    second = runtime.invoke(conversation_id, "C001", "请转人工处理")
+    second_id = second["pending_confirmation"]["action_id"]
+
+    retried = runtime.confirm(conversation_id, "C001", first_id, approved=False)
+
+    assert retried["result"]["action_id"] == first_id
+    assert retried["result"]["status"] == ActionStatus.SUBMITTED.value
+    assert retried["result"]["ticket_id"] == submitted["result"]["ticket_id"]
+    assert runtime.executor.pending_action_for_conversation(conversation_id, "C001")[
+        "action_id"
+    ] == second_id
+    cancelled = runtime.confirm(conversation_id, "C001", second_id, approved=False)
+    assert cancelled["result"]["action_id"] == second_id
+    assert len(repository.list_tickets("C001")) == 1
+
+
+def test_confirmation_action_must_belong_to_conversation(runtime_and_repo) -> None:
+    runtime, repository = runtime_and_repo
+    first = runtime.invoke("conv-action-owner-a", "C001", "请转人工处理")
+    second = runtime.invoke("conv-action-owner-b", "C001", "请转人工处理")
+
+    with pytest.raises(ToolPermissionError):
+        runtime.confirm(
+            "conv-action-owner-b",
+            "C001",
+            first["pending_confirmation"]["action_id"],
+            approved=True,
+        )
+
+    assert repository.list_tickets("C001") == []
+    completed = runtime.confirm(
+        "conv-action-owner-b", "C001", second["pending_confirmation"]["action_id"], approved=True
+    )
+    assert completed["result"]["action_id"] == second["pending_confirmation"]["action_id"]
+
+
+def test_concurrent_invokes_return_canonical_pending_without_mixed_specialist_facts(
+    tmp_path,
+) -> None:
+    barrier = Barrier(2)
+
+    class CoordinatedRepository(SqlRepository):
+        def create_pending_action(self, *args, **kwargs):
+            barrier.wait(timeout=5)
+            action_type = kwargs.get("action_type") or args[1]
+            if action_type == "after_sales":
+                sleep(0.05)
+            return super().create_pending_action(*args, **kwargs)
+
+    repository = CoordinatedRepository(Database(f"sqlite:///{tmp_path / 'concurrent-runtime.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    runtimes = [
+        AgentRuntime(
+            executor=AuthorizedToolExecutor(repository),
+            decision_model=RulesDecisionModel(),
+            checkpoint_path=tmp_path / f"concurrent-checkpoints-{position}.db",
+        )
+        for position in range(2)
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    runtimes[0].invoke,
+                    "conv-concurrent-invoke",
+                    "C001",
+                    "订单 O1001 鞋底开胶，申请退款",
+                ),
+                pool.submit(
+                    runtimes[1].invoke,
+                    "conv-concurrent-invoke",
+                    "C001",
+                    "请转人工处理",
+                ),
+            ]
+            responses = [future.result(timeout=10) for future in futures]
+
+        assert all(response["pending_confirmation"]["action_type"] == "handoff" for response in responses)
+        assert all("订单 O1001" not in response["reply"] for response in responses)
+        pending = repository.get_pending_action("conv-concurrent-invoke", "C001")
+        assert pending is not None
+        assert len([action for action in actions(repository) if action.status == "pending_confirmation"]) == 1
+        completed = runtimes[0].confirm(
+            "conv-concurrent-invoke", "C001", pending.id, approved=True
+        )
+        assert completed["result"]["action_id"] == pending.id
+    finally:
+        for runtime in runtimes:
+            runtime.close()

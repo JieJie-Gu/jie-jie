@@ -75,22 +75,23 @@ class AgentRuntime:
         return self._public_result(result)
 
     def confirm(
-        self, conversation_id: str, customer_id: str, *, approved: bool | None = None
+        self,
+        conversation_id: str,
+        customer_id: str,
+        action_id: str,
+        *,
+        approved: bool | None = None,
     ) -> dict[str, Any]:
         config = self._config(conversation_id)
         self.executor.require_conversation_owner(conversation_id, customer_id)
         if type(approved) is not bool:
             raise ValueError("Confirmation requires boolean approval")
 
-        action = self.executor.pending_action_for_conversation(conversation_id, customer_id)
-        if action is None:
-            action = self.executor.latest_action_for_conversation(conversation_id, customer_id)
-        if action is None:
-            raise ValueError("Conversation has no pending confirmation")
+        action = self.executor.action_for_conversation(conversation_id, customer_id, action_id)
+        state = self._state_for_action(action_id, self.graph.get_state(config).values)
         if action["status"] != ActionStatus.PENDING_CONFIRMATION.value:
-            return self._completed_result(action, self.graph.get_state(config).values)
+            return self._completed_result(action, state)
 
-        state = self.graph.get_state(config).values
         interrupted_action = state.get("pending_confirmation")
         if interrupted_action is None or interrupted_action.get("action_id") != action["action_id"]:
             result = self._transition_action(action["action_id"], customer_id, approved)
@@ -223,6 +224,13 @@ class AgentRuntime:
         response_results = self._response_results(state, result)
         guarded_contents = self.guard.render_results(response_results)
         return self.supervisor.synthesize(response_results, guarded_contents)
+
+    @staticmethod
+    def _state_for_action(action_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        state_action = state.get("pending_confirmation") or state.get("business_result") or {}
+        if state_action.get("action_id") == action_id:
+            return state
+        return {}
 
     @staticmethod
     def _response_results(
