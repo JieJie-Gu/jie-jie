@@ -130,6 +130,20 @@ class SqlRepository:
                 managed_session, conversation_id, customer_id, token, ttl_seconds=ttl_seconds
             )
 
+    def require_active_turn_lease(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        *,
+        session: Session | None = None,
+    ) -> None:
+        if session is not None:
+            self._require_active_turn_lease(session, conversation_id, customer_id, token)
+            return
+        with self.transaction() as managed_session:
+            self._require_active_turn_lease(managed_session, conversation_id, customer_id, token)
+
     def release_turn_lease(
         self,
         conversation_id: str,
@@ -371,6 +385,26 @@ class SqlRepository:
             .execution_options(synchronize_session=False)
         )
         if renewed.rowcount != 1:
+            raise ConversationLeaseLostError("Conversation turn lease was lost")
+
+    @classmethod
+    def _require_active_turn_lease(
+        cls, session: Session, conversation_id: str, customer_id: str, token: str
+    ) -> None:
+        cls._require_conversation_owner(session, conversation_id, customer_id)
+        fenced = session.execute(
+            update(Conversation)
+            .where(
+                Conversation.id == conversation_id,
+                Conversation.customer_id == customer_id,
+                Conversation.turn_lease_token == token,
+                Conversation.turn_lease_expires_at.is_not(None),
+                Conversation.turn_lease_expires_at > utc_now(),
+            )
+            .values(turn_lease_token=token)
+            .execution_options(synchronize_session=False)
+        )
+        if fenced.rowcount != 1:
             raise ConversationLeaseLostError("Conversation turn lease was lost")
 
     @classmethod

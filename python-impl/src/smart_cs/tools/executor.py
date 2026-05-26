@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
@@ -9,6 +10,12 @@ from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
 from smart_cs.domain.models import Order, PendingAction, Product, Ticket
 from smart_cs.domain.repositories import CustomerFactsRepository
 from smart_cs.tools.customer_tools import CUSTOMER_TOOL_SCHEMAS
+
+
+@dataclass(frozen=True)
+class TurnFence:
+    conversation_id: str
+    lease_token: str
 
 
 class AuthorizedToolExecutor:
@@ -26,7 +33,13 @@ class AuthorizedToolExecutor:
         }
         self.declared_tools = {tool.name: tool for tool in CUSTOMER_TOOL_SCHEMAS}
 
-    def invoke(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def invoke(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        turn_fence: TurnFence | None = None,
+    ) -> dict[str, Any]:
         provided_arguments = dict(arguments)
 
         def operation() -> dict[str, Any]:
@@ -38,7 +51,12 @@ class AuthorizedToolExecutor:
             return self._audited_write_call(
                 tool_name,
                 provided_arguments,
-                lambda session: self._write_handlers[tool_name](provided_arguments, session),
+                lambda session: self._invoke_fenced_write(
+                    self._write_handlers[tool_name],
+                    provided_arguments,
+                    turn_fence,
+                    session,
+                ),
             )
         return self._audited_call(tool_name, provided_arguments, operation)
 
@@ -93,19 +111,25 @@ class AuthorizedToolExecutor:
         action = self.repository.get_action(conversation_id, customer_id, action_id)
         return self._persisted_action_result(action)
 
-    def submit_confirmed_action(self, action_id: str, customer_id: str) -> dict[str, Any]:
+    def submit_confirmed_action(
+        self, action_id: str, customer_id: str, *, turn_fence: TurnFence | None = None
+    ) -> dict[str, Any]:
         arguments = {"action_id": action_id, "customer_id": customer_id}
 
         def operation(session: Any) -> dict[str, Any]:
+            self._require_write_fence(turn_fence, customer_id, session)
             action, ticket = self.repository.submit_pending_action(action_id, customer_id, session=session)
             return self._action_result(action, ticket)
 
         return self._audited_write_call("submit_confirmed_action", arguments, operation)
 
-    def cancel_pending_action(self, action_id: str, customer_id: str) -> dict[str, Any]:
+    def cancel_pending_action(
+        self, action_id: str, customer_id: str, *, turn_fence: TurnFence | None = None
+    ) -> dict[str, Any]:
         arguments = {"action_id": action_id, "customer_id": customer_id}
 
         def operation(session: Any) -> dict[str, Any]:
+            self._require_write_fence(turn_fence, customer_id, session)
             action = self.repository.cancel_pending_action(action_id, customer_id, session=session)
             return self._action_result(action)
 
@@ -161,6 +185,33 @@ class AuthorizedToolExecutor:
         if order is None:
             raise ToolPermissionError("Order is not available to this customer")
         return order
+
+    def _invoke_fenced_write(
+        self,
+        handler: Callable[[dict[str, Any], Any], dict[str, Any]],
+        arguments: dict[str, Any],
+        turn_fence: TurnFence | None,
+        session: Any,
+    ) -> dict[str, Any]:
+        if (
+            turn_fence is not None
+            and arguments.get("conversation_id") != turn_fence.conversation_id
+        ):
+            raise ToolPermissionError("Turn fence does not match the conversation action")
+        self._require_write_fence(turn_fence, str(arguments["customer_id"]), session)
+        return handler(arguments, session)
+
+    def _require_write_fence(
+        self, turn_fence: TurnFence | None, customer_id: str, session: Any
+    ) -> None:
+        if turn_fence is None:
+            return
+        self.repository.require_active_turn_lease(
+            turn_fence.conversation_id,
+            customer_id,
+            turn_fence.lease_token,
+            session=session,
+        )
 
     def _audited_call(
         self,
@@ -285,4 +336,4 @@ class AuthorizedToolExecutor:
         return result
 
 
-__all__ = ["AuthorizedToolExecutor", "InvalidActionState", "ToolPermissionError"]
+__all__ = ["AuthorizedToolExecutor", "InvalidActionState", "ToolPermissionError", "TurnFence"]

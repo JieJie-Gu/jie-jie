@@ -65,6 +65,36 @@ class FailingRulesDecisionModel(RulesDecisionModel):
         raise RuntimeError("injected graph failure")
 
 
+class StealLeaseAtWriteExecutor(AuthorizedToolExecutor):
+    def __init__(self, repository, *, conversation_id: str, operation: str) -> None:
+        super().__init__(repository)
+        self._conversation_id = conversation_id
+        self._operation = operation
+        self.replacement_token = f"replacement-{operation}"
+
+    def invoke(self, tool_name: str, arguments: dict, **kwargs):
+        if self._operation == "draft" and tool_name in {"draft_after_sales", "draft_handoff"}:
+            self._steal_lease()
+        return super().invoke(tool_name, arguments, **kwargs)
+
+    def submit_confirmed_action(self, action_id: str, customer_id: str, **kwargs):
+        if self._operation == "submit":
+            self._steal_lease()
+        return super().submit_confirmed_action(action_id, customer_id, **kwargs)
+
+    def cancel_pending_action(self, action_id: str, customer_id: str, **kwargs):
+        if self._operation == "cancel":
+            self._steal_lease()
+        return super().cancel_pending_action(action_id, customer_id, **kwargs)
+
+    def _steal_lease(self) -> None:
+        with self.repository.database.session() as session:
+            conversation = session.get(Conversation, self._conversation_id)
+            assert conversation is not None
+            conversation.turn_lease_token = self.replacement_token
+            conversation.turn_lease_expires_at = utc_now() + timedelta(seconds=30)
+
+
 def test_rules_runtime_logs_non_evaluation_development_mode(tmp_path, caplog) -> None:
     repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'logging-rules.db'}"))
     repository.create_schema()
@@ -637,3 +667,66 @@ def test_close_waits_for_active_turn_and_returns_without_heartbeat_threads(tmp_p
         if not closed:
             runtime.close()
     assert active_heartbeat_threads() == []
+
+
+def test_lost_lease_at_draft_write_boundary_rolls_back_pending_action(tmp_path) -> None:
+    conversation_id = "conv-fenced-draft"
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'fenced-draft.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    executor = StealLeaseAtWriteExecutor(
+        repository, conversation_id=conversation_id, operation="draft"
+    )
+    runtime = AgentRuntime(
+        executor=executor,
+        decision_model=RulesDecisionModel(),
+        checkpoint_path=tmp_path / "fenced-draft-checkpoints.db",
+    )
+    try:
+        with pytest.raises(ConversationLeaseLostError, match="lease"):
+            runtime.invoke(conversation_id, "C001", "订单 O1001 鞋底开胶，申请退款")
+
+        assert actions(repository) == []
+        assert not any(
+            call.tool_name == "draft_after_sales" and call.status == "succeeded"
+            for call in repository.list_tool_calls()
+        )
+    finally:
+        repository.release_turn_lease(conversation_id, "C001", executor.replacement_token)
+        runtime.close()
+
+
+@pytest.mark.parametrize(("approved", "operation"), [(True, "submit"), (False, "cancel")])
+def test_lost_lease_at_confirmation_write_boundary_rolls_back_transition(
+    tmp_path, approved, operation
+) -> None:
+    conversation_id = f"conv-fenced-{operation}"
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / f'fenced-{operation}.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    runtime = AgentRuntime(
+        executor=AuthorizedToolExecutor(repository),
+        decision_model=RulesDecisionModel(),
+        checkpoint_path=tmp_path / f"fenced-{operation}-checkpoints.db",
+    )
+    pending = runtime.invoke(conversation_id, "C001", "请转人工处理")
+    action_id = pending["pending_confirmation"]["action_id"]
+    executor = StealLeaseAtWriteExecutor(
+        repository, conversation_id=conversation_id, operation=operation
+    )
+    runtime.executor = executor
+    try:
+        with pytest.raises(ConversationLeaseLostError, match="lease"):
+            runtime.confirm(conversation_id, "C001", action_id, approved=approved)
+
+        action = repository.get_action(conversation_id, "C001", action_id)
+        assert action.status == ActionStatus.PENDING_CONFIRMATION.value
+        assert repository.list_tickets("C001") == []
+        tool_name = "submit_confirmed_action" if operation == "submit" else "cancel_pending_action"
+        assert not any(
+            call.tool_name == tool_name and call.status == "succeeded"
+            for call in repository.list_tool_calls()
+        )
+    finally:
+        repository.release_turn_lease(conversation_id, "C001", executor.replacement_token)
+        runtime.close()

@@ -37,6 +37,15 @@ class CustomerFactsRepository(Protocol):
         session: Any | None = None,
     ) -> None: ...
 
+    def require_active_turn_lease(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        *,
+        session: Any | None = None,
+    ) -> None: ...
+
     def release_turn_lease(
         self, conversation_id: str, customer_id: str, token: str, *, session: Any | None = None
     ) -> None: ...

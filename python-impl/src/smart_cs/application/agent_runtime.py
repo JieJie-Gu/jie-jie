@@ -21,7 +21,7 @@ from smart_cs.agents.supervisor import PlanningDecisionModel, SupervisorAgent
 from smart_cs.domain.enums import ActionStatus
 from smart_cs.domain.errors import ConversationLeaseLostError
 from smart_cs.infrastructure.model_factory import RulesDecisionModel
-from smart_cs.tools.executor import AuthorizedToolExecutor
+from smart_cs.tools.executor import AuthorizedToolExecutor, TurnFence
 
 
 LOGGER = logging.getLogger(__name__)
@@ -59,6 +59,9 @@ class _TurnLeaseHeartbeat:
 
     def start(self) -> None:
         self._thread.start()
+
+    def turn_fence(self) -> TurnFence:
+        return TurnFence(conversation_id=self._conversation_id, lease_token=self._token)
 
     def stop(self) -> None:
         self._stopped.set()
@@ -282,6 +285,12 @@ class AgentRuntime:
         if heartbeat is not None:
             heartbeat.renew_and_check()
 
+    def _current_turn_fence(self) -> TurnFence | None:
+        heartbeat = getattr(self._active_turn, "heartbeat", None)
+        if heartbeat is None:
+            return None
+        return heartbeat.turn_fence()
+
     def _build_graph(self):
         workflow = StateGraph(RuntimeState)
         workflow.add_node("router", self._router_node)
@@ -325,6 +334,7 @@ class AgentRuntime:
             decision=SupervisorDecision.model_validate(state["decision"]),
             conversation_id=state["conversation_id"],
             idempotency_key=state.get("request_id"),
+            turn_fence=self._current_turn_fence(),
         )
         self._assert_turn_lease()
         return {
@@ -360,10 +370,18 @@ class AgentRuntime:
         if not isinstance(approval, dict) or type(approval.get("approved")) is not bool:
             raise ValueError("Confirmation requires boolean approval")
         if approval["approved"]:
-            result = self.executor.submit_confirmed_action(action["action_id"], state["customer_id"])
+            result = self.executor.submit_confirmed_action(
+                action["action_id"],
+                state["customer_id"],
+                turn_fence=self._current_turn_fence(),
+            )
             self._assert_turn_lease()
             return {"business_result": result}
-        result = self.executor.cancel_pending_action(action["action_id"], state["customer_id"])
+        result = self.executor.cancel_pending_action(
+            action["action_id"],
+            state["customer_id"],
+            turn_fence=self._current_turn_fence(),
+        )
         self._assert_turn_lease()
         return {"business_result": result}
 
@@ -391,8 +409,12 @@ class AgentRuntime:
         self, action_id: str, customer_id: str, approved: bool
     ) -> dict[str, Any]:
         if approved:
-            return self.executor.submit_confirmed_action(action_id, customer_id)
-        return self.executor.cancel_pending_action(action_id, customer_id)
+            return self.executor.submit_confirmed_action(
+                action_id, customer_id, turn_fence=self._current_turn_fence()
+            )
+        return self.executor.cancel_pending_action(
+            action_id, customer_id, turn_fence=self._current_turn_fence()
+        )
 
     def _pending_result(
         self, action: dict[str, Any], state: dict[str, Any] | None = None

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
-from smart_cs.tools.executor import AuthorizedToolExecutor
+from smart_cs.tools.executor import AuthorizedToolExecutor, TurnFence
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,11 @@ class SpecialistDispatcher:
     def __init__(self, executor: AuthorizedToolExecutor) -> None:
         self.executor = executor
         self._registry: dict[
-            str, Callable[[str, str, RouteAnalysis, str | None, str | None], dict[str, Any]]
+            str,
+            Callable[
+                [str, str, RouteAnalysis, str | None, str | None, TurnFence | None],
+                dict[str, Any],
+            ],
         ] = {
             "ProductAgent": self._product,
             "OrderAgent": self._order,
@@ -39,12 +43,13 @@ class SpecialistDispatcher:
         decision: SupervisorDecision,
         conversation_id: str | None = None,
         idempotency_key: str | None = None,
+        turn_fence: TurnFence | None = None,
     ) -> SpecialistExecution:
         results: list[dict[str, Any]] = []
         for agent_name in decision.agents:
             results.append(
                 self._registry[agent_name](
-                    message, customer_id, route, conversation_id, idempotency_key
+                    message, customer_id, route, conversation_id, idempotency_key, turn_fence
                 )
             )
 
@@ -75,6 +80,7 @@ class SpecialistDispatcher:
         _route: RouteAnalysis,
         _conversation_id: str | None,
         _idempotency_key: str | None,
+        _turn_fence: TurnFence | None,
     ) -> dict[str, Any]:
         return self.executor.invoke("search_products", {"query": message})
 
@@ -85,6 +91,7 @@ class SpecialistDispatcher:
         route: RouteAnalysis,
         _conversation_id: str | None,
         _idempotency_key: str | None,
+        _turn_fence: TurnFence | None,
     ) -> dict[str, Any]:
         order_id = route.entities.get("order_id")
         if order_id is None:
@@ -100,6 +107,7 @@ class SpecialistDispatcher:
         _route: RouteAnalysis,
         _conversation_id: str | None,
         _idempotency_key: str | None,
+        _turn_fence: TurnFence | None,
     ) -> dict[str, Any]:
         return {"status": "unavailable", "message": "知识库将在 RAG 阶段启用。"}
 
@@ -110,6 +118,7 @@ class SpecialistDispatcher:
         route: RouteAnalysis,
         conversation_id: str | None,
         idempotency_key: str | None,
+        turn_fence: TurnFence | None,
     ) -> dict[str, Any]:
         order_id = route.entities.get("order_id")
         if order_id is None:
@@ -123,6 +132,7 @@ class SpecialistDispatcher:
         return self.executor.invoke(
             "draft_after_sales",
             arguments,
+            turn_fence=turn_fence,
         )
 
     def _handoff(
@@ -132,11 +142,12 @@ class SpecialistDispatcher:
         _route: RouteAnalysis,
         conversation_id: str | None,
         idempotency_key: str | None,
+        turn_fence: TurnFence | None,
     ) -> dict[str, Any]:
         arguments: dict[str, Any] = {"customer_id": customer_id, "reason": message}
         self._add_request_identity(arguments, conversation_id, idempotency_key)
         return self.executor.invoke(
-            "draft_handoff", arguments
+            "draft_handoff", arguments, turn_fence=turn_fence
         )
 
     @staticmethod
