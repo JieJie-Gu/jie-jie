@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Protocol
@@ -15,7 +16,11 @@ from smart_cs.agents.specialists import SpecialistDispatcher
 from smart_cs.agents.state import RouteAnalysis, RuntimeState, SupervisorDecision
 from smart_cs.agents.supervisor import PlanningDecisionModel, SupervisorAgent
 from smart_cs.domain.enums import ActionStatus
+from smart_cs.infrastructure.model_factory import RulesDecisionModel
 from smart_cs.tools.executor import AuthorizedToolExecutor
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DecisionModel(RoutingDecisionModel, PlanningDecisionModel, Protocol):
@@ -32,6 +37,11 @@ class AgentRuntime:
         decision_model: DecisionModel,
         checkpoint_path: str | Path,
     ) -> None:
+        if isinstance(decision_model, RulesDecisionModel):
+            LOGGER.warning(
+                "RulesDecisionModel enabled: development non-evaluation mode; "
+                "do not use this run for evaluation claims."
+            )
         self.executor = executor
         self.router = RouterAgent(decision_model)
         self.supervisor = SupervisorAgent(decision_model)

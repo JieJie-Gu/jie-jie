@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import logging
 from threading import Barrier
 from time import sleep
 
@@ -10,7 +11,7 @@ from smart_cs.domain.errors import ToolPermissionError
 from smart_cs.domain.enums import ActionStatus
 from smart_cs.domain.models import PendingAction
 from smart_cs.infrastructure.database import Database
-from smart_cs.infrastructure.model_factory import RulesDecisionModel
+from smart_cs.infrastructure.model_factory import LangChainDecisionModel, RulesDecisionModel
 from smart_cs.infrastructure.repositories import SqlRepository
 from smart_cs.tools.executor import AuthorizedToolExecutor
 
@@ -34,6 +35,41 @@ def runtime_and_repo(tmp_path):
 def actions(repository) -> list[PendingAction]:
     with repository.database.session() as session:
         return list(session.scalars(select(PendingAction).order_by(PendingAction.created_at)))
+
+
+def test_rules_runtime_logs_non_evaluation_development_mode(tmp_path, caplog) -> None:
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'logging-rules.db'}"))
+    repository.create_schema()
+    with caplog.at_level(logging.WARNING, logger="smart_cs.application.agent_runtime"):
+        runtime = AgentRuntime(
+            executor=AuthorizedToolExecutor(repository),
+            decision_model=RulesDecisionModel(),
+            checkpoint_path=tmp_path / "logging-rules-checkpoints.db",
+        )
+    runtime.close()
+
+    assert "RulesDecisionModel" in caplog.text
+    assert "development" in caplog.text
+    assert "non-evaluation" in caplog.text
+
+
+def test_langchain_runtime_does_not_log_rules_development_marker(tmp_path, caplog) -> None:
+    class FakeChatModel:
+        def with_structured_output(self, _schema):
+            return object()
+
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'logging-llm.db'}"))
+    repository.create_schema()
+    with caplog.at_level(logging.WARNING, logger="smart_cs.application.agent_runtime"):
+        runtime = AgentRuntime(
+            executor=AuthorizedToolExecutor(repository),
+            decision_model=LangChainDecisionModel(FakeChatModel()),
+            checkpoint_path=tmp_path / "logging-llm-checkpoints.db",
+        )
+    runtime.close()
+
+    assert "RulesDecisionModel" not in caplog.text
+    assert "non-evaluation" not in caplog.text
 
 
 def test_approved_after_sales_confirmation_submits_single_ticket(runtime_and_repo) -> None:
