@@ -1,6 +1,7 @@
 import pytest
 
 from smart_cs.agents.router import RouterAgent
+from smart_cs.agents.guardrails import ResponseGuard
 from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
 from smart_cs.agents.supervisor import SupervisorAgent, validate_decision
 from smart_cs.infrastructure.model_factory import RulesDecisionModel
@@ -60,3 +61,28 @@ def test_rules_agents_plan_after_sales_in_business_order() -> None:
     assert decision.agents == ["OrderAgent", "AfterSalesAgent"]
     assert decision.action == "draft_after_sales"
     assert decision.requires_confirmation is True
+
+
+def test_supervisor_synthesizes_guarded_order_fact_before_pending_confirmation() -> None:
+    supervisor = SupervisorAgent(RulesDecisionModel())
+    results = [
+        {"order_id": "O1001", "status": "delivered"},
+        {"action_type": "after_sales", "status": "pending_confirmation"},
+    ]
+    guarded_contents = [ResponseGuard().render(result) for result in results]
+
+    reply = supervisor.synthesize(results, guarded_contents)
+
+    assert reply == (
+        "订单 O1001 当前状态为 delivered。"
+        "已为您生成售后申请草稿，请确认后提交。"
+    )
+    assert "已受理" not in reply
+
+
+def test_supervisor_keeps_single_read_result_as_guarded_reply() -> None:
+    supervisor = SupervisorAgent(RulesDecisionModel())
+    results = [{"order_id": "O1001", "status": "delivered"}]
+    guarded_contents = [ResponseGuard().render(results[0])]
+
+    assert supervisor.synthesize(results, guarded_contents) == "订单 O1001 当前状态为 delivered。"

@@ -48,7 +48,11 @@ class AgentRuntime:
         self.executor.claim_conversation(conversation_id, customer_id)
         pending_action = self.executor.pending_action_for_conversation(conversation_id, customer_id)
         if pending_action is not None:
-            return self._pending_result(pending_action)
+            state = self.graph.get_state(self._config(conversation_id)).values
+            checkpoint_action = state.get("pending_confirmation") or {}
+            if checkpoint_action.get("action_id") != pending_action["action_id"]:
+                state = {}
+            return self._pending_result(pending_action, state)
 
         result = self.graph.invoke(
             {
@@ -62,6 +66,7 @@ class AgentRuntime:
                 "specialist_results": [],
                 "business_result": None,
                 "pending_confirmation": None,
+                "guarded_contents": [],
                 "reply": None,
                 "status": "running",
             },
@@ -104,16 +109,18 @@ class AgentRuntime:
         workflow.add_node("specialists", self._specialists_node)
         workflow.add_node("confirm_action", self._confirm_action_node)
         workflow.add_node("guard", self._guard_node)
+        workflow.add_node("synthesize", self._synthesize_node)
         workflow.add_edge(START, "router")
         workflow.add_edge("router", "supervisor")
         workflow.add_edge("supervisor", "specialists")
-        workflow.add_conditional_edges(
-            "specialists",
-            self._next_after_specialists,
-            {"confirm_action": "confirm_action", "guard": "guard"},
-        )
+        workflow.add_edge("specialists", "guard")
         workflow.add_edge("confirm_action", "guard")
-        workflow.add_edge("guard", END)
+        workflow.add_edge("guard", "synthesize")
+        workflow.add_conditional_edges(
+            "synthesize",
+            self._next_after_synthesis,
+            {"confirm_action": "confirm_action", "end": END},
+        )
         return workflow.compile(checkpointer=self._checkpointer)
 
     def _router_node(self, state: RuntimeState) -> dict[str, Any]:
@@ -142,10 +149,14 @@ class AgentRuntime:
         }
 
     @staticmethod
-    def _next_after_specialists(state: RuntimeState) -> str:
-        if state.get("pending_confirmation") is not None:
+    def _next_after_synthesis(state: RuntimeState) -> str:
+        result = state.get("business_result") or {}
+        if (
+            state.get("pending_confirmation") is not None
+            and result.get("status") == ActionStatus.PENDING_CONFIRMATION.value
+        ):
             return "confirm_action"
-        return "guard"
+        return "end"
 
     def _confirm_action_node(self, state: RuntimeState) -> dict[str, Any]:
         action = state["pending_confirmation"]
@@ -155,7 +166,7 @@ class AgentRuntime:
             {
                 "status": "pending_confirmation",
                 "pending_confirmation": action,
-                "reply": self.guard.render(action),
+                "reply": state.get("reply") or self.guard.render(action),
             }
         )
         if not isinstance(approval, dict) or type(approval.get("approved")) is not bool:
@@ -164,13 +175,17 @@ class AgentRuntime:
             result = self.executor.submit_confirmed_action(action["action_id"], state["customer_id"])
             return {"business_result": result}
         result = self.executor.cancel_pending_action(action["action_id"], state["customer_id"])
-        return {"business_result": result, "reply": "已取消本次申请。"}
+        return {"business_result": result}
 
     def _guard_node(self, state: RuntimeState) -> dict[str, Any]:
-        result = state["business_result"]
-        if result is None:
-            raise ValueError("Missing business result for response rendering")
-        reply = state.get("reply") or self.guard.render(result)
+        results = self._response_results(state)
+        return {"guarded_contents": self.guard.render_results(results)}
+
+    def _synthesize_node(self, state: RuntimeState) -> dict[str, Any]:
+        results = self._response_results(state)
+        reply = self.supervisor.synthesize(results, state["guarded_contents"])
+        if self._next_after_synthesis(state) == "confirm_action":
+            return {"status": ActionStatus.PENDING_CONFIRMATION.value, "reply": reply}
         return {"status": "completed", "reply": reply, "pending_confirmation": None}
 
     @staticmethod
@@ -184,27 +199,43 @@ class AgentRuntime:
             return self.executor.submit_confirmed_action(action_id, customer_id)
         return self.executor.cancel_pending_action(action_id, customer_id)
 
-    def _pending_result(self, action: dict[str, Any]) -> dict[str, Any]:
+    def _pending_result(
+        self, action: dict[str, Any], state: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        reply = self._synthesize_reply(action, state or {})
         return {
             "status": ActionStatus.PENDING_CONFIRMATION.value,
             "pending_confirmation": action,
-            "reply": self.guard.render(action),
+            "reply": reply,
         }
 
     def _completed_result(
         self, result: dict[str, Any], state: dict[str, Any]
     ) -> dict[str, Any]:
-        reply = (
-            "已取消本次申请。"
-            if result["status"] == ActionStatus.CANCELLED.value
-            else self.guard.render(result)
-        )
         return {
             "status": "completed",
-            "reply": reply,
+            "reply": self._synthesize_reply(result, state),
             "result": result,
             "agents_invoked": state.get("agents_invoked", []),
         }
+
+    def _synthesize_reply(self, result: dict[str, Any], state: dict[str, Any]) -> str:
+        response_results = self._response_results(state, result)
+        guarded_contents = self.guard.render_results(response_results)
+        return self.supervisor.synthesize(response_results, guarded_contents)
+
+    @staticmethod
+    def _response_results(
+        state: dict[str, Any], result: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        terminal_result = result if result is not None else state.get("business_result")
+        if terminal_result is None:
+            raise ValueError("Missing business result for response rendering")
+        results = list(state.get("specialist_results", []))
+        if results:
+            results[-1] = terminal_result
+            return results
+        return [terminal_result]
 
     @staticmethod
     def _public_result(state: dict[str, Any]) -> dict[str, Any]:

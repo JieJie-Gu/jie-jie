@@ -30,5 +30,6 @@ class RuntimeState(TypedDict, total=False):
     specialist_results: list[dict[str, Any]]
     business_result: dict[str, Any] | None
     pending_confirmation: dict[str, Any] | None
+    guarded_contents: list[str]
     reply: str | None
     status: str

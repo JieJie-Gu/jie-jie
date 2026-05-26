@@ -6,6 +6,9 @@ from typing import Any
 class ResponseGuard:
     """Render only facts returned from deterministic specialist operations."""
 
+    def render_results(self, results: list[dict[str, Any]]) -> list[str]:
+        return [self.render(result) for result in results]
+
     def render(self, result: dict[str, Any]) -> str:
         status = result.get("status")
         action_type = result.get("action_type")
@@ -17,6 +20,8 @@ class ResponseGuard:
             return f"售后申请已受理，工单编号为 {result['ticket_id']}。"
         if status == "submitted" and action_type == "handoff":
             return f"人工服务申请已提交，工单编号为 {result['ticket_id']}。"
+        if status == "cancelled" and action_type in {"after_sales", "handoff"}:
+            return "已取消本次申请。"
         if "message" in result:
             return str(result["message"])
         if "order_id" in result:

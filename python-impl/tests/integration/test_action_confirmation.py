@@ -38,7 +38,8 @@ def test_approved_after_sales_confirmation_submits_single_ticket(runtime_and_rep
 
     assert pending["status"] == "pending_confirmation"
     assert pending["pending_confirmation"]["action_type"] == "after_sales"
-    assert pending["reply"] == "已为您生成售后申请草稿，请确认后提交。"
+    assert "订单 O1001 当前状态为 delivered。" in pending["reply"]
+    assert pending["reply"].endswith("已为您生成售后申请草稿，请确认后提交。")
     assert repository.list_tickets("C001") == []
 
     completed = runtime.confirm("conv-1", "C001", approved=True)
@@ -57,6 +58,16 @@ def test_rejected_after_sales_confirmation_cancels_without_ticket(runtime_and_re
     assert completed["status"] == "completed"
     assert completed["reply"] == "已取消本次申请。"
     assert repository.list_tickets("C001") == []
+
+
+def test_order_read_flow_returns_guarded_supervisor_reply(runtime_and_repo) -> None:
+    runtime, _repository = runtime_and_repo
+
+    completed = runtime.invoke("conv-read", "C001", "查询订单 O1001")
+
+    assert completed["status"] == "completed"
+    assert completed["agents_invoked"] == ["OrderAgent"]
+    assert completed["reply"] == "订单 O1001 当前状态为 delivered。"
 
 
 def test_conversation_owner_rejects_another_customer_without_losing_pending_action(
@@ -87,6 +98,7 @@ def test_new_message_while_pending_reuses_original_draft_and_confirmation_path(
 
     assert repeated["status"] == "pending_confirmation"
     assert repeated["pending_confirmation"]["action_id"] == original["pending_confirmation"]["action_id"]
+    assert repeated["reply"] == original["reply"]
     assert len(actions(repository)) == 1
 
     completed = runtime.confirm(conversation_id, "C001", approved=True)

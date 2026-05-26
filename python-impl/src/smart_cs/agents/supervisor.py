@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
 
@@ -54,10 +54,21 @@ def validate_decision(decision: SupervisorDecision) -> SupervisorDecision:
 
 
 class SupervisorAgent:
-    """Plan specialist execution, then enforce deterministic action controls."""
+    """Plan specialist execution and compose only guarded result content."""
 
     def __init__(self, decision_model: PlanningDecisionModel) -> None:
         self.decision_model = decision_model
 
     def plan(self, message: str, route: RouteAnalysis) -> SupervisorDecision:
         return validate_decision(self.decision_model.plan(message, route))
+
+    def synthesize(
+        self, specialist_results: list[dict[str, Any]], guarded_contents: list[str]
+    ) -> str:
+        if not specialist_results or len(specialist_results) != len(guarded_contents):
+            raise ValueError("Supervisor synthesis requires one guarded content per result")
+
+        terminal_status = specialist_results[-1].get("status")
+        if terminal_status in {"submitted", "cancelled"}:
+            return guarded_contents[-1]
+        return "".join(guarded_contents)
