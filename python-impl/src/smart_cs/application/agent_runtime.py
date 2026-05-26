@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import logging
 import sqlite3
 from pathlib import Path
+from threading import Condition, Event, Lock, Thread, local
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from smart_cs.agents.specialists import SpecialistDispatcher
 from smart_cs.agents.state import RouteAnalysis, RuntimeState, SupervisorDecision
 from smart_cs.agents.supervisor import PlanningDecisionModel, SupervisorAgent
 from smart_cs.domain.enums import ActionStatus
+from smart_cs.domain.errors import ConversationLeaseLostError
 from smart_cs.infrastructure.model_factory import RulesDecisionModel
 from smart_cs.tools.executor import AuthorizedToolExecutor
 
@@ -29,10 +31,84 @@ class DecisionModel(RoutingDecisionModel, PlanningDecisionModel, Protocol):
     pass
 
 
+class _TurnLeaseHeartbeat:
+    def __init__(
+        self,
+        *,
+        executor: AuthorizedToolExecutor,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        ttl_seconds: float,
+        renew_interval_seconds: float,
+    ) -> None:
+        self._executor = executor
+        self._conversation_id = conversation_id
+        self._customer_id = customer_id
+        self._token = token
+        self._ttl_seconds = ttl_seconds
+        self._renew_interval_seconds = renew_interval_seconds
+        self._stopped = Event()
+        self._failure_lock = Lock()
+        self._failure: Exception | None = None
+        self._thread = Thread(
+            target=self._run,
+            name=f"smart-cs-turn-lease-heartbeat-{token}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self._thread.join()
+
+    def renew_and_check(self) -> None:
+        self.check()
+        try:
+            self._executor.renew_turn_lease(
+                self._conversation_id,
+                self._customer_id,
+                self._token,
+                ttl_seconds=self._ttl_seconds,
+            )
+        except Exception as error:
+            self._record_failure(error)
+            self.check()
+
+    def check(self) -> None:
+        with self._failure_lock:
+            failure = self._failure
+        if failure is None:
+            return
+        if isinstance(failure, ConversationLeaseLostError):
+            raise failure
+        raise ConversationLeaseLostError("Conversation turn lease heartbeat failed") from failure
+
+    def _run(self) -> None:
+        while not self._stopped.wait(self._renew_interval_seconds):
+            try:
+                self._executor.renew_turn_lease(
+                    self._conversation_id,
+                    self._customer_id,
+                    self._token,
+                    ttl_seconds=self._ttl_seconds,
+                )
+            except Exception as error:
+                self._record_failure(error)
+                return
+
+    def _record_failure(self, error: Exception) -> None:
+        with self._failure_lock:
+            if self._failure is None:
+                self._failure = error
+
+
 class AgentRuntime:
     """Run customer service orchestration with durable confirmation pauses."""
 
-    TURN_LEASE_TTL_SECONDS = 300
+    TURN_LEASE_TTL_SECONDS = 300.0
 
     def __init__(
         self,
@@ -40,7 +116,18 @@ class AgentRuntime:
         executor: AuthorizedToolExecutor,
         decision_model: DecisionModel,
         checkpoint_path: str | Path,
+        turn_lease_ttl_seconds: float = TURN_LEASE_TTL_SECONDS,
+        turn_lease_renew_interval_seconds: float | None = None,
     ) -> None:
+        renew_interval_seconds = (
+            turn_lease_renew_interval_seconds
+            if turn_lease_renew_interval_seconds is not None
+            else turn_lease_ttl_seconds / 3
+        )
+        if turn_lease_ttl_seconds <= 0:
+            raise ValueError("Turn lease TTL must be positive")
+        if renew_interval_seconds <= 0 or renew_interval_seconds >= turn_lease_ttl_seconds:
+            raise ValueError("Turn lease renew interval must be positive and shorter than TTL")
         if isinstance(decision_model, RulesDecisionModel):
             LOGGER.warning(
                 "RulesDecisionModel enabled: development non-evaluation mode; "
@@ -51,6 +138,13 @@ class AgentRuntime:
         self.supervisor = SupervisorAgent(decision_model)
         self.specialists = SpecialistDispatcher(executor)
         self.guard = ResponseGuard()
+        self._turn_lease_ttl_seconds = turn_lease_ttl_seconds
+        self._turn_lease_renew_interval_seconds = renew_interval_seconds
+        self._active_turn = local()
+        self._lifecycle = Condition()
+        self._active_turn_count = 0
+        self._closing = False
+        self._closed = False
 
         checkpoint_file = Path(checkpoint_path)
         checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
@@ -119,21 +213,74 @@ class AgentRuntime:
             return self._public_result(result)
 
     def close(self) -> None:
-        self._checkpoint_connection.close()
+        with self._lifecycle:
+            self._closing = True
+            while self._active_turn_count:
+                self._lifecycle.wait()
+            if self._closed:
+                return
+            self._checkpoint_connection.close()
+            self._closed = True
 
     @contextmanager
     def _turn_lease(self, conversation_id: str, customer_id: str) -> Iterator[None]:
+        self._begin_turn()
         token = str(uuid4())
-        self.executor.acquire_turn_lease(
-            conversation_id,
-            customer_id,
-            token,
-            ttl_seconds=self.TURN_LEASE_TTL_SECONDS,
-        )
         try:
-            yield
+            self.executor.acquire_turn_lease(
+                conversation_id,
+                customer_id,
+                token,
+                ttl_seconds=self._turn_lease_ttl_seconds,
+            )
+            heartbeat = _TurnLeaseHeartbeat(
+                executor=self.executor,
+                conversation_id=conversation_id,
+                customer_id=customer_id,
+                token=token,
+                ttl_seconds=self._turn_lease_ttl_seconds,
+                renew_interval_seconds=self._turn_lease_renew_interval_seconds,
+            )
+            previous_heartbeat = getattr(self._active_turn, "heartbeat", None)
+            self._active_turn.heartbeat = heartbeat
+            started = False
+            try:
+                heartbeat.start()
+                started = True
+                yield
+            finally:
+                if started:
+                    heartbeat.stop()
+                try:
+                    if started:
+                        heartbeat.renew_and_check()
+                finally:
+                    try:
+                        self.executor.release_turn_lease(conversation_id, customer_id, token)
+                    finally:
+                        if previous_heartbeat is None:
+                            del self._active_turn.heartbeat
+                        else:
+                            self._active_turn.heartbeat = previous_heartbeat
         finally:
-            self.executor.release_turn_lease(conversation_id, customer_id, token)
+            self._end_turn()
+
+    def _begin_turn(self) -> None:
+        with self._lifecycle:
+            if self._closing or self._closed:
+                raise RuntimeError("Agent runtime is closed")
+            self._active_turn_count += 1
+
+    def _end_turn(self) -> None:
+        with self._lifecycle:
+            self._active_turn_count -= 1
+            if self._active_turn_count == 0:
+                self._lifecycle.notify_all()
+
+    def _assert_turn_lease(self) -> None:
+        heartbeat = getattr(self._active_turn, "heartbeat", None)
+        if heartbeat is not None:
+            heartbeat.renew_and_check()
 
     def _build_graph(self):
         workflow = StateGraph(RuntimeState)
@@ -157,15 +304,20 @@ class AgentRuntime:
         return workflow.compile(checkpointer=self._checkpointer)
 
     def _router_node(self, state: RuntimeState) -> dict[str, Any]:
+        self._assert_turn_lease()
         route = self.router.analyze(state["message"])
+        self._assert_turn_lease()
         return {"route": route.model_dump()}
 
     def _supervisor_node(self, state: RuntimeState) -> dict[str, Any]:
+        self._assert_turn_lease()
         route = RouteAnalysis.model_validate(state["route"])
         decision = self.supervisor.plan(state["message"], route)
+        self._assert_turn_lease()
         return {"decision": decision.model_dump()}
 
     def _specialists_node(self, state: RuntimeState) -> dict[str, Any]:
+        self._assert_turn_lease()
         execution = self.specialists.execute(
             message=state["message"],
             customer_id=state["customer_id"],
@@ -174,6 +326,7 @@ class AgentRuntime:
             conversation_id=state["conversation_id"],
             idempotency_key=state.get("request_id"),
         )
+        self._assert_turn_lease()
         return {
             "agents_invoked": execution.agents_invoked,
             "specialist_results": execution.results,
@@ -192,6 +345,7 @@ class AgentRuntime:
         return "end"
 
     def _confirm_action_node(self, state: RuntimeState) -> dict[str, Any]:
+        self._assert_turn_lease()
         action = state["pending_confirmation"]
         if action is None:
             raise ValueError("Missing pending action for confirmation")
@@ -202,21 +356,29 @@ class AgentRuntime:
                 "reply": state.get("reply") or self.guard.render(action),
             }
         )
+        self._assert_turn_lease()
         if not isinstance(approval, dict) or type(approval.get("approved")) is not bool:
             raise ValueError("Confirmation requires boolean approval")
         if approval["approved"]:
             result = self.executor.submit_confirmed_action(action["action_id"], state["customer_id"])
+            self._assert_turn_lease()
             return {"business_result": result}
         result = self.executor.cancel_pending_action(action["action_id"], state["customer_id"])
+        self._assert_turn_lease()
         return {"business_result": result}
 
     def _guard_node(self, state: RuntimeState) -> dict[str, Any]:
+        self._assert_turn_lease()
         results = self._response_results(state)
-        return {"guarded_contents": self.guard.render_results(results)}
+        guarded_contents = self.guard.render_results(results)
+        self._assert_turn_lease()
+        return {"guarded_contents": guarded_contents}
 
     def _synthesize_node(self, state: RuntimeState) -> dict[str, Any]:
+        self._assert_turn_lease()
         results = self._response_results(state)
         reply = self.supervisor.synthesize(results, state["guarded_contents"])
+        self._assert_turn_lease()
         if self._next_after_synthesis(state) == "confirm_action":
             return {"status": ActionStatus.PENDING_CONFIRMATION.value, "reply": reply}
         return {"status": "completed", "reply": reply, "pending_confirmation": None}

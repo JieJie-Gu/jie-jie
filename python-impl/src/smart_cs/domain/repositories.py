@@ -23,7 +23,17 @@ class CustomerFactsRepository(Protocol):
         customer_id: str,
         token: str,
         *,
-        ttl_seconds: int,
+        ttl_seconds: float,
+        session: Any | None = None,
+    ) -> None: ...
+
+    def renew_turn_lease(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        *,
+        ttl_seconds: float,
         session: Any | None = None,
     ) -> None: ...
 

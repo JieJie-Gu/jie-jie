@@ -57,9 +57,16 @@ class AuthorizedToolExecutor:
         self.repository.require_conversation_owner(conversation_id, customer_id)
 
     def acquire_turn_lease(
-        self, conversation_id: str, customer_id: str, token: str, *, ttl_seconds: int
+        self, conversation_id: str, customer_id: str, token: str, *, ttl_seconds: float
     ) -> None:
         self.repository.acquire_turn_lease(
+            conversation_id, customer_id, token, ttl_seconds=ttl_seconds
+        )
+
+    def renew_turn_lease(
+        self, conversation_id: str, customer_id: str, token: str, *, ttl_seconds: float
+    ) -> None:
+        self.repository.renew_turn_lease(
             conversation_id, customer_id, token, ttl_seconds=ttl_seconds
         )
 

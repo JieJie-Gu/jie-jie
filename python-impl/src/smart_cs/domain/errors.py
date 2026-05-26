@@ -8,3 +8,7 @@ class InvalidActionState(RuntimeError):
 
 class ConversationBusyError(RuntimeError):
     """Raised when another turn currently owns a conversation graph thread."""
+
+
+class ConversationLeaseLostError(RuntimeError):
+    """Raised when an active turn no longer holds its conversation lease."""

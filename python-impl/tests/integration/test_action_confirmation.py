@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 import logging
-from threading import Barrier, Event
+from threading import Barrier, Event, enumerate as enumerate_threads
 from time import sleep
 
 import pytest
@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
 from smart_cs.application.agent_runtime import AgentRuntime
-from smart_cs.domain.errors import ConversationBusyError, ToolPermissionError
+from smart_cs.domain.errors import ConversationBusyError, ConversationLeaseLostError, ToolPermissionError
 from smart_cs.domain.enums import ActionStatus
 from smart_cs.domain.models import Conversation, PendingAction, utc_now
 from smart_cs.infrastructure.database import Database
@@ -37,6 +37,14 @@ def runtime_and_repo(tmp_path):
 def actions(repository) -> list[PendingAction]:
     with repository.database.session() as session:
         return list(session.scalars(select(PendingAction).order_by(PendingAction.created_at)))
+
+
+def active_heartbeat_threads():
+    return [
+        thread
+        for thread in enumerate_threads()
+        if thread.name.startswith("smart-cs-turn-lease-heartbeat-")
+    ]
 
 
 class BlockingRulesDecisionModel(RulesDecisionModel):
@@ -446,6 +454,7 @@ def test_pending_interrupt_releases_turn_lease(runtime_and_repo) -> None:
     runtime, repository = runtime_and_repo
 
     pending = runtime.invoke("conv-interrupt-release", "C001", "请转人工处理")
+    assert active_heartbeat_threads() == []
     repository.acquire_turn_lease("conv-interrupt-release", "C001", "probe", ttl_seconds=30)
     repository.release_turn_lease("conv-interrupt-release", "C001", "probe")
 
@@ -471,6 +480,7 @@ def test_graph_exception_releases_turn_lease(tmp_path) -> None:
         with pytest.raises(RuntimeError, match="injected graph failure"):
             runtime.invoke("conv-failure-release", "C001", "查询订单 O1001")
 
+        assert active_heartbeat_threads() == []
         repository.acquire_turn_lease("conv-failure-release", "C001", "probe", ttl_seconds=30)
         repository.release_turn_lease("conv-failure-release", "C001", "probe")
     finally:
@@ -490,3 +500,140 @@ def test_expired_turn_lease_can_be_recovered(tmp_path) -> None:
 
     repository.acquire_turn_lease("conv-expired-lease", "C001", "replacement", ttl_seconds=30)
     repository.release_turn_lease("conv-expired-lease", "C001", "replacement")
+
+
+def test_heartbeat_keeps_long_running_shared_thread_turn_exclusive(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'heartbeat-runtime.db'}"
+    first_repository = SqlRepository(Database(database_url))
+    first_repository.create_schema()
+    first_repository.seed_demo_data()
+    second_repository = SqlRepository(Database(database_url))
+    entered = Event()
+    proceed = Event()
+    checkpoint_path = tmp_path / "heartbeat-runtime-checkpoints.db"
+    runtimes = [
+        AgentRuntime(
+            executor=AuthorizedToolExecutor(first_repository),
+            decision_model=BlockingRulesDecisionModel(entered, proceed),
+            checkpoint_path=checkpoint_path,
+            turn_lease_ttl_seconds=0.5,
+            turn_lease_renew_interval_seconds=0.1,
+        ),
+        AgentRuntime(
+            executor=AuthorizedToolExecutor(second_repository),
+            decision_model=RulesDecisionModel(),
+            checkpoint_path=checkpoint_path,
+            turn_lease_ttl_seconds=0.5,
+            turn_lease_renew_interval_seconds=0.1,
+        ),
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(
+                runtimes[0].invoke,
+                "conv-heartbeat-thread",
+                "C001",
+                "订单 O1001 鞋底开胶，申请退款",
+            )
+            assert entered.wait(timeout=5)
+            sleep(0.8)
+            try:
+                with pytest.raises(ConversationBusyError, match="busy"):
+                    runtimes[1].invoke("conv-heartbeat-thread", "C001", "请转人工处理")
+            finally:
+                proceed.set()
+            pending = first.result(timeout=10)
+
+        completed = runtimes[1].confirm(
+            "conv-heartbeat-thread",
+            "C001",
+            pending["pending_confirmation"]["action_id"],
+            approved=True,
+        )
+        assert completed["agents_invoked"] == ["OrderAgent", "AfterSalesAgent"]
+    finally:
+        proceed.set()
+        for runtime in runtimes:
+            runtime.close()
+    assert active_heartbeat_threads() == []
+
+
+def test_turn_that_loses_lease_token_aborts_without_returning_success(tmp_path) -> None:
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'lost-lease.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    entered = Event()
+    proceed = Event()
+    runtime = AgentRuntime(
+        executor=AuthorizedToolExecutor(repository),
+        decision_model=BlockingRulesDecisionModel(entered, proceed),
+        checkpoint_path=tmp_path / "lost-lease-checkpoints.db",
+        turn_lease_ttl_seconds=1,
+        turn_lease_renew_interval_seconds=0.05,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(
+                runtime.invoke,
+                "conv-lost-lease",
+                "C001",
+                "订单 O1001 鞋底开胶，申请退款",
+            )
+            assert entered.wait(timeout=5)
+            with repository.database.session() as session:
+                conversation = session.get(Conversation, "conv-lost-lease")
+                assert conversation is not None
+                conversation.turn_lease_token = "replacement-owner"
+                conversation.turn_lease_expires_at = utc_now() + timedelta(seconds=30)
+            sleep(0.15)
+            proceed.set()
+            with pytest.raises(ConversationLeaseLostError, match="lease"):
+                first.result(timeout=10)
+
+        assert actions(repository) == []
+        with pytest.raises(ConversationBusyError, match="busy"):
+            repository.acquire_turn_lease("conv-lost-lease", "C001", "intruder", ttl_seconds=30)
+        repository.release_turn_lease("conv-lost-lease", "C001", "replacement-owner")
+    finally:
+        proceed.set()
+        runtime.close()
+    assert active_heartbeat_threads() == []
+
+
+def test_close_waits_for_active_turn_and_returns_without_heartbeat_threads(tmp_path) -> None:
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'close-heartbeat.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    entered = Event()
+    proceed = Event()
+    runtime = AgentRuntime(
+        executor=AuthorizedToolExecutor(repository),
+        decision_model=BlockingRulesDecisionModel(entered, proceed),
+        checkpoint_path=tmp_path / "close-heartbeat-checkpoints.db",
+        turn_lease_ttl_seconds=1,
+        turn_lease_renew_interval_seconds=0.05,
+    )
+    closed = False
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(
+                runtime.invoke,
+                "conv-close-heartbeat",
+                "C001",
+                "订单 O1001 鞋底开胶，申请退款",
+            )
+            assert entered.wait(timeout=5)
+            closing = pool.submit(runtime.close)
+            try:
+                sleep(0.1)
+                assert not closing.done()
+            finally:
+                proceed.set()
+            assert first.result(timeout=10)["status"] == "pending_confirmation"
+            closing.result(timeout=10)
+            closed = True
+    finally:
+        proceed.set()
+        if not closed:
+            runtime.close()
+    assert active_heartbeat_threads() == []

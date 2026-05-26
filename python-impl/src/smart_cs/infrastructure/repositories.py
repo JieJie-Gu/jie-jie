@@ -11,7 +11,12 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from smart_cs.domain.enums import ActionStatus, OrderStatus, TicketStatus
-from smart_cs.domain.errors import ConversationBusyError, InvalidActionState, ToolPermissionError
+from smart_cs.domain.errors import (
+    ConversationBusyError,
+    ConversationLeaseLostError,
+    InvalidActionState,
+    ToolPermissionError,
+)
 from smart_cs.domain.models import (
     Base,
     Conversation,
@@ -89,7 +94,7 @@ class SqlRepository:
         customer_id: str,
         token: str,
         *,
-        ttl_seconds: int,
+        ttl_seconds: float,
         session: Session | None = None,
     ) -> None:
         if ttl_seconds <= 0:
@@ -101,6 +106,27 @@ class SqlRepository:
             return
         with self.transaction() as managed_session:
             self._acquire_turn_lease(
+                managed_session, conversation_id, customer_id, token, ttl_seconds=ttl_seconds
+            )
+
+    def renew_turn_lease(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        *,
+        ttl_seconds: float,
+        session: Session | None = None,
+    ) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("Turn lease TTL must be positive")
+        if session is not None:
+            self._renew_turn_lease(
+                session, conversation_id, customer_id, token, ttl_seconds=ttl_seconds
+            )
+            return
+        with self.transaction() as managed_session:
+            self._renew_turn_lease(
                 managed_session, conversation_id, customer_id, token, ttl_seconds=ttl_seconds
             )
 
@@ -296,7 +322,7 @@ class SqlRepository:
         customer_id: str,
         token: str,
         *,
-        ttl_seconds: int,
+        ttl_seconds: float,
     ) -> None:
         cls._require_conversation_owner(session, conversation_id, customer_id)
         now = utc_now()
@@ -319,6 +345,33 @@ class SqlRepository:
         )
         if acquired.rowcount != 1:
             raise ConversationBusyError("Conversation is busy with another active turn")
+
+    @classmethod
+    def _renew_turn_lease(
+        cls,
+        session: Session,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        *,
+        ttl_seconds: float,
+    ) -> None:
+        cls._require_conversation_owner(session, conversation_id, customer_id)
+        now = utc_now()
+        renewed = session.execute(
+            update(Conversation)
+            .where(
+                Conversation.id == conversation_id,
+                Conversation.customer_id == customer_id,
+                Conversation.turn_lease_token == token,
+                Conversation.turn_lease_expires_at.is_not(None),
+                Conversation.turn_lease_expires_at > now,
+            )
+            .values(turn_lease_expires_at=now + timedelta(seconds=ttl_seconds))
+            .execution_options(synchronize_session=False)
+        )
+        if renewed.rowcount != 1:
+            raise ConversationLeaseLostError("Conversation turn lease was lost")
 
     @classmethod
     def _release_turn_lease(

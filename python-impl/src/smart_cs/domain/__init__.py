@@ -1,6 +1,11 @@
 """Business entities and contracts for the smart customer service application."""
 
-from smart_cs.domain.errors import ConversationBusyError, InvalidActionState, ToolPermissionError
+from smart_cs.domain.errors import (
+    ConversationBusyError,
+    ConversationLeaseLostError,
+    InvalidActionState,
+    ToolPermissionError,
+)
 from smart_cs.domain.models import (
     Conversation,
     Customer,
@@ -15,6 +20,7 @@ from smart_cs.domain.models import (
 __all__ = [
     "Conversation",
     "ConversationBusyError",
+    "ConversationLeaseLostError",
     "Customer",
     "InvalidActionState",
     "Message",
