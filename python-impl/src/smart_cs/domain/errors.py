@@ -4,3 +4,7 @@ class ToolPermissionError(PermissionError):
 
 class InvalidActionState(RuntimeError):
     """Raised when a pending action cannot make the requested transition."""
+
+
+class ConversationBusyError(RuntimeError):
+    """Raised when another turn currently owns a conversation graph thread."""

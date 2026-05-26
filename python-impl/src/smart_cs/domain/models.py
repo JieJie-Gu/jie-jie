@@ -30,6 +30,10 @@ class Conversation(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), nullable=False, index=True)
+    turn_lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    turn_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 

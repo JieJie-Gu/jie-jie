@@ -1,15 +1,17 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 import logging
-from threading import Barrier
+from threading import Barrier, Event
 from time import sleep
 
 import pytest
 from sqlalchemy import select
 
+from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
 from smart_cs.application.agent_runtime import AgentRuntime
-from smart_cs.domain.errors import ToolPermissionError
+from smart_cs.domain.errors import ConversationBusyError, ToolPermissionError
 from smart_cs.domain.enums import ActionStatus
-from smart_cs.domain.models import PendingAction
+from smart_cs.domain.models import Conversation, PendingAction, utc_now
 from smart_cs.infrastructure.database import Database
 from smart_cs.infrastructure.model_factory import LangChainDecisionModel, RulesDecisionModel
 from smart_cs.infrastructure.repositories import SqlRepository
@@ -35,6 +37,24 @@ def runtime_and_repo(tmp_path):
 def actions(repository) -> list[PendingAction]:
     with repository.database.session() as session:
         return list(session.scalars(select(PendingAction).order_by(PendingAction.created_at)))
+
+
+class BlockingRulesDecisionModel(RulesDecisionModel):
+    def __init__(self, entered: Event, proceed: Event) -> None:
+        self.entered = entered
+        self.proceed = proceed
+
+    def route(self, message: str) -> RouteAnalysis:
+        if "鞋底开胶" in message:
+            self.entered.set()
+            if not self.proceed.wait(timeout=5):
+                raise TimeoutError("Blocked route was not released")
+        return super().route(message)
+
+
+class FailingRulesDecisionModel(RulesDecisionModel):
+    def route(self, _message: str) -> RouteAnalysis:
+        raise RuntimeError("injected graph failure")
 
 
 def test_rules_runtime_logs_non_evaluation_development_mode(tmp_path, caplog) -> None:
@@ -255,7 +275,7 @@ def test_confirmation_action_must_belong_to_conversation(runtime_and_repo) -> No
     assert completed["result"]["action_id"] == second["pending_confirmation"]["action_id"]
 
 
-def test_concurrent_invokes_return_canonical_pending_without_mixed_specialist_facts(
+def test_competing_specialist_drafts_return_canonical_pending_without_mixed_facts(
     tmp_path,
 ) -> None:
     barrier = Barrier(2)
@@ -280,32 +300,193 @@ def test_concurrent_invokes_return_canonical_pending_without_mixed_specialist_fa
         for position in range(2)
     ]
     try:
+        repository.claim_conversation("conv-concurrent-draft", "C001")
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [
                 pool.submit(
-                    runtimes[0].invoke,
-                    "conv-concurrent-invoke",
-                    "C001",
-                    "订单 O1001 鞋底开胶，申请退款",
+                    runtimes[0].specialists.execute,
+                    message="订单 O1001 鞋底开胶，申请退款",
+                    customer_id="C001",
+                    route=RouteAnalysis(
+                        intent="after_sales", entities={"order_id": "O1001"}, risk="medium"
+                    ),
+                    decision=SupervisorDecision(
+                        agents=["OrderAgent", "AfterSalesAgent"],
+                        action="draft_after_sales",
+                        requires_confirmation=True,
+                    ),
+                    conversation_id="conv-concurrent-draft",
+                    idempotency_key="after-sales-request",
                 ),
                 pool.submit(
-                    runtimes[1].invoke,
-                    "conv-concurrent-invoke",
-                    "C001",
-                    "请转人工处理",
+                    runtimes[1].specialists.execute,
+                    message="请转人工处理",
+                    customer_id="C001",
+                    route=RouteAnalysis(intent="handoff", risk="high"),
+                    decision=SupervisorDecision(
+                        agents=["HandoffAgent"],
+                        action="draft_handoff",
+                        requires_confirmation=True,
+                    ),
+                    conversation_id="conv-concurrent-draft",
+                    idempotency_key="handoff-request",
                 ),
             ]
-            responses = [future.result(timeout=10) for future in futures]
+            executions = [future.result(timeout=10) for future in futures]
 
-        assert all(response["pending_confirmation"]["action_type"] == "handoff" for response in responses)
-        assert all("订单 O1001" not in response["reply"] for response in responses)
-        pending = repository.get_pending_action("conv-concurrent-invoke", "C001")
+        assert all(
+            execution.pending_confirmation["action_type"] == "handoff" for execution in executions
+        )
+        assert all(
+            not any(result.get("order_id") == "O1001" for result in execution.results)
+            for execution in executions
+        )
+        pending = repository.get_pending_action("conv-concurrent-draft", "C001")
         assert pending is not None
         assert len([action for action in actions(repository) if action.status == "pending_confirmation"]) == 1
         completed = runtimes[0].confirm(
-            "conv-concurrent-invoke", "C001", pending.id, approved=True
+            "conv-concurrent-draft", "C001", pending.id, approved=True
         )
         assert completed["result"]["action_id"] == pending.id
     finally:
         for runtime in runtimes:
             runtime.close()
+
+
+def test_same_runtime_rejects_overlapping_turn_before_checkpoint_state_can_mix(tmp_path) -> None:
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'same-runtime.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    entered = Event()
+    proceed = Event()
+    runtime = AgentRuntime(
+        executor=AuthorizedToolExecutor(repository),
+        decision_model=BlockingRulesDecisionModel(entered, proceed),
+        checkpoint_path=tmp_path / "same-runtime-checkpoints.db",
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(
+                runtime.invoke,
+                "conv-shared-thread",
+                "C001",
+                "订单 O1001 鞋底开胶，申请退款",
+            )
+            assert entered.wait(timeout=5)
+            try:
+                with pytest.raises(ConversationBusyError, match="busy"):
+                    runtime.invoke("conv-shared-thread", "C001", "请转人工处理")
+            finally:
+                proceed.set()
+            pending = first.result(timeout=10)
+
+        assert pending["pending_confirmation"]["action_type"] == "after_sales"
+        completed = runtime.confirm(
+            "conv-shared-thread",
+            "C001",
+            pending["pending_confirmation"]["action_id"],
+            approved=True,
+        )
+        assert completed["agents_invoked"] == ["OrderAgent", "AfterSalesAgent"]
+    finally:
+        proceed.set()
+        runtime.close()
+
+
+def test_shared_database_and_checkpoint_reject_overlapping_cross_runtime_turn(tmp_path) -> None:
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'shared-runtime.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    entered = Event()
+    proceed = Event()
+    checkpoint_path = tmp_path / "shared-runtime-checkpoints.db"
+    runtimes = [
+        AgentRuntime(
+            executor=AuthorizedToolExecutor(repository),
+            decision_model=BlockingRulesDecisionModel(entered, proceed),
+            checkpoint_path=checkpoint_path,
+        ),
+        AgentRuntime(
+            executor=AuthorizedToolExecutor(repository),
+            decision_model=RulesDecisionModel(),
+            checkpoint_path=checkpoint_path,
+        ),
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(
+                runtimes[0].invoke,
+                "conv-shared-runtime-thread",
+                "C001",
+                "订单 O1001 鞋底开胶，申请退款",
+            )
+            assert entered.wait(timeout=5)
+            try:
+                with pytest.raises(ConversationBusyError, match="busy"):
+                    runtimes[1].invoke("conv-shared-runtime-thread", "C001", "请转人工处理")
+            finally:
+                proceed.set()
+            pending = first.result(timeout=10)
+
+        assert pending["pending_confirmation"]["action_type"] == "after_sales"
+        completed = runtimes[1].confirm(
+            "conv-shared-runtime-thread",
+            "C001",
+            pending["pending_confirmation"]["action_id"],
+            approved=True,
+        )
+        assert completed["agents_invoked"] == ["OrderAgent", "AfterSalesAgent"]
+    finally:
+        proceed.set()
+        for runtime in runtimes:
+            runtime.close()
+
+
+def test_pending_interrupt_releases_turn_lease(runtime_and_repo) -> None:
+    runtime, repository = runtime_and_repo
+
+    pending = runtime.invoke("conv-interrupt-release", "C001", "请转人工处理")
+    repository.acquire_turn_lease("conv-interrupt-release", "C001", "probe", ttl_seconds=30)
+    repository.release_turn_lease("conv-interrupt-release", "C001", "probe")
+
+    completed = runtime.confirm(
+        "conv-interrupt-release",
+        "C001",
+        pending["pending_confirmation"]["action_id"],
+        approved=False,
+    )
+    assert completed["result"]["status"] == ActionStatus.CANCELLED.value
+
+
+def test_graph_exception_releases_turn_lease(tmp_path) -> None:
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'failure-release.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    runtime = AgentRuntime(
+        executor=AuthorizedToolExecutor(repository),
+        decision_model=FailingRulesDecisionModel(),
+        checkpoint_path=tmp_path / "failure-release-checkpoints.db",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="injected graph failure"):
+            runtime.invoke("conv-failure-release", "C001", "查询订单 O1001")
+
+        repository.acquire_turn_lease("conv-failure-release", "C001", "probe", ttl_seconds=30)
+        repository.release_turn_lease("conv-failure-release", "C001", "probe")
+    finally:
+        runtime.close()
+
+
+def test_expired_turn_lease_can_be_recovered(tmp_path) -> None:
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'expired-lease.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    repository.claim_conversation("conv-expired-lease", "C001")
+    repository.acquire_turn_lease("conv-expired-lease", "C001", "stale", ttl_seconds=30)
+    with repository.database.session() as session:
+        conversation = session.get(Conversation, "conv-expired-lease")
+        assert conversation is not None
+        conversation.turn_lease_expires_at = utc_now() - timedelta(seconds=1)
+
+    repository.acquire_turn_lease("conv-expired-lease", "C001", "replacement", ttl_seconds=30)
+    repository.release_turn_lease("conv-expired-lease", "C001", "replacement")

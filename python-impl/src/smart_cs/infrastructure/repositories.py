@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -10,7 +11,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from smart_cs.domain.enums import ActionStatus, OrderStatus, TicketStatus
-from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
+from smart_cs.domain.errors import ConversationBusyError, InvalidActionState, ToolPermissionError
 from smart_cs.domain.models import (
     Base,
     Conversation,
@@ -81,6 +82,41 @@ class SqlRepository:
             return self._require_conversation_owner(session, conversation_id, customer_id)
         with self.transaction() as managed_session:
             return self._require_conversation_owner(managed_session, conversation_id, customer_id)
+
+    def acquire_turn_lease(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        *,
+        ttl_seconds: int,
+        session: Session | None = None,
+    ) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("Turn lease TTL must be positive")
+        if session is not None:
+            self._acquire_turn_lease(
+                session, conversation_id, customer_id, token, ttl_seconds=ttl_seconds
+            )
+            return
+        with self.transaction() as managed_session:
+            self._acquire_turn_lease(
+                managed_session, conversation_id, customer_id, token, ttl_seconds=ttl_seconds
+            )
+
+    def release_turn_lease(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        *,
+        session: Session | None = None,
+    ) -> None:
+        if session is not None:
+            self._release_turn_lease(session, conversation_id, customer_id, token)
+            return
+        with self.transaction() as managed_session:
+            self._release_turn_lease(managed_session, conversation_id, customer_id, token)
 
     def customer_exists(self, customer_id: str, *, session: Session | None = None) -> bool:
         if session is not None:
@@ -251,6 +287,54 @@ class SqlRepository:
         if conversation is None or conversation.customer_id != customer_id:
             raise ToolPermissionError("Conversation is not available to this customer")
         return conversation
+
+    @classmethod
+    def _acquire_turn_lease(
+        cls,
+        session: Session,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        *,
+        ttl_seconds: int,
+    ) -> None:
+        cls._require_conversation_owner(session, conversation_id, customer_id)
+        now = utc_now()
+        acquired = session.execute(
+            update(Conversation)
+            .where(
+                Conversation.id == conversation_id,
+                Conversation.customer_id == customer_id,
+                or_(
+                    Conversation.turn_lease_token.is_(None),
+                    Conversation.turn_lease_expires_at.is_(None),
+                    Conversation.turn_lease_expires_at <= now,
+                ),
+            )
+            .values(
+                turn_lease_token=token,
+                turn_lease_expires_at=now + timedelta(seconds=ttl_seconds),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if acquired.rowcount != 1:
+            raise ConversationBusyError("Conversation is busy with another active turn")
+
+    @classmethod
+    def _release_turn_lease(
+        cls, session: Session, conversation_id: str, customer_id: str, token: str
+    ) -> None:
+        cls._require_conversation_owner(session, conversation_id, customer_id)
+        session.execute(
+            update(Conversation)
+            .where(
+                Conversation.id == conversation_id,
+                Conversation.customer_id == customer_id,
+                Conversation.turn_lease_token == token,
+            )
+            .values(turn_lease_token=None, turn_lease_expires_at=None)
+            .execution_options(synchronize_session=False)
+        )
 
     @staticmethod
     def _create_pending_action(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import logging
 import sqlite3
 from pathlib import Path
@@ -30,6 +32,8 @@ class DecisionModel(RoutingDecisionModel, PlanningDecisionModel, Protocol):
 class AgentRuntime:
     """Run customer service orchestration with durable confirmation pauses."""
 
+    TURN_LEASE_TTL_SECONDS = 300
+
     def __init__(
         self,
         *,
@@ -56,33 +60,36 @@ class AgentRuntime:
 
     def invoke(self, conversation_id: str, customer_id: str, message: str) -> dict[str, Any]:
         self.executor.claim_conversation(conversation_id, customer_id)
-        pending_action = self.executor.pending_action_for_conversation(conversation_id, customer_id)
-        if pending_action is not None:
-            state = self.graph.get_state(self._config(conversation_id)).values
-            checkpoint_action = state.get("pending_confirmation") or {}
-            if checkpoint_action.get("action_id") != pending_action["action_id"]:
-                state = {}
-            return self._pending_result(pending_action, state)
+        with self._turn_lease(conversation_id, customer_id):
+            pending_action = self.executor.pending_action_for_conversation(
+                conversation_id, customer_id
+            )
+            if pending_action is not None:
+                state = self.graph.get_state(self._config(conversation_id)).values
+                checkpoint_action = state.get("pending_confirmation") or {}
+                if checkpoint_action.get("action_id") != pending_action["action_id"]:
+                    state = {}
+                return self._pending_result(pending_action, state)
 
-        result = self.graph.invoke(
-            {
-                "conversation_id": conversation_id,
-                "customer_id": customer_id,
-                "request_id": f"{conversation_id}:{uuid4()}",
-                "message": message,
-                "route": {},
-                "decision": {},
-                "agents_invoked": [],
-                "specialist_results": [],
-                "business_result": None,
-                "pending_confirmation": None,
-                "guarded_contents": [],
-                "reply": None,
-                "status": "running",
-            },
-            config=self._config(conversation_id),
-        )
-        return self._public_result(result)
+            result = self.graph.invoke(
+                {
+                    "conversation_id": conversation_id,
+                    "customer_id": customer_id,
+                    "request_id": f"{conversation_id}:{uuid4()}",
+                    "message": message,
+                    "route": {},
+                    "decision": {},
+                    "agents_invoked": [],
+                    "specialist_results": [],
+                    "business_result": None,
+                    "pending_confirmation": None,
+                    "guarded_contents": [],
+                    "reply": None,
+                    "status": "running",
+                },
+                config=self._config(conversation_id),
+            )
+            return self._public_result(result)
 
     def confirm(
         self,
@@ -97,21 +104,36 @@ class AgentRuntime:
         if type(approved) is not bool:
             raise ValueError("Confirmation requires boolean approval")
 
-        action = self.executor.action_for_conversation(conversation_id, customer_id, action_id)
-        state = self._state_for_action(action_id, self.graph.get_state(config).values)
-        if action["status"] != ActionStatus.PENDING_CONFIRMATION.value:
-            return self._completed_result(action, state)
+        with self._turn_lease(conversation_id, customer_id):
+            action = self.executor.action_for_conversation(conversation_id, customer_id, action_id)
+            state = self._state_for_action(action_id, self.graph.get_state(config).values)
+            if action["status"] != ActionStatus.PENDING_CONFIRMATION.value:
+                return self._completed_result(action, state)
 
-        interrupted_action = state.get("pending_confirmation")
-        if interrupted_action is None or interrupted_action.get("action_id") != action["action_id"]:
-            result = self._transition_action(action["action_id"], customer_id, approved)
-            return self._completed_result(result, state)
+            interrupted_action = state.get("pending_confirmation")
+            if interrupted_action is None or interrupted_action.get("action_id") != action["action_id"]:
+                result = self._transition_action(action["action_id"], customer_id, approved)
+                return self._completed_result(result, state)
 
-        result = self.graph.invoke(Command(resume={"approved": approved}), config=config)
-        return self._public_result(result)
+            result = self.graph.invoke(Command(resume={"approved": approved}), config=config)
+            return self._public_result(result)
 
     def close(self) -> None:
         self._checkpoint_connection.close()
+
+    @contextmanager
+    def _turn_lease(self, conversation_id: str, customer_id: str) -> Iterator[None]:
+        token = str(uuid4())
+        self.executor.acquire_turn_lease(
+            conversation_id,
+            customer_id,
+            token,
+            ttl_seconds=self.TURN_LEASE_TTL_SECONDS,
+        )
+        try:
+            yield
+        finally:
+            self.executor.release_turn_lease(conversation_id, customer_id, token)
 
     def _build_graph(self):
         workflow = StateGraph(RuntimeState)

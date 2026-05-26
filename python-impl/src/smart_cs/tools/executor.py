@@ -56,6 +56,16 @@ class AuthorizedToolExecutor:
     def require_conversation_owner(self, conversation_id: str, customer_id: str) -> None:
         self.repository.require_conversation_owner(conversation_id, customer_id)
 
+    def acquire_turn_lease(
+        self, conversation_id: str, customer_id: str, token: str, *, ttl_seconds: int
+    ) -> None:
+        self.repository.acquire_turn_lease(
+            conversation_id, customer_id, token, ttl_seconds=ttl_seconds
+        )
+
+    def release_turn_lease(self, conversation_id: str, customer_id: str, token: str) -> None:
+        self.repository.release_turn_lease(conversation_id, customer_id, token)
+
     def pending_action_for_conversation(
         self, conversation_id: str, customer_id: str
     ) -> dict[str, Any] | None:

@@ -17,6 +17,20 @@ class CustomerFactsRepository(Protocol):
         self, conversation_id: str, customer_id: str, *, session: Any | None = None
     ) -> Conversation: ...
 
+    def acquire_turn_lease(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        token: str,
+        *,
+        ttl_seconds: int,
+        session: Any | None = None,
+    ) -> None: ...
+
+    def release_turn_lease(
+        self, conversation_id: str, customer_id: str, token: str, *, session: Any | None = None
+    ) -> None: ...
+
     def customer_exists(self, customer_id: str, *, session: Any | None = None) -> bool: ...
 
     def search_products(self, query: str) -> list[Product]: ...
