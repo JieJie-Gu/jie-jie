@@ -109,7 +109,7 @@ python-impl/requirements.txt
 - Create: `python-impl/tests/unit/test_vision_agent.py`
 - Create: `python-impl/tests/integration/test_image_after_sales.py`
 
-- [ ] **Step 1: Write red tests for storage isolation and low-confidence evidence**
+- [x] **Step 1: Write red tests for storage isolation and low-confidence evidence**
 
 ```python
 # python-impl/tests/integration/test_image_after_sales.py
@@ -145,7 +145,7 @@ def test_low_confidence_image_cannot_support_after_sales_draft() -> None:
     assert evidence.usable_for_draft is False
 ```
 
-- [ ] **Step 2: Implement evidence and storage boundary**
+- [x] **Step 2: Implement evidence and storage boundary**
 
 ```python
 # python-impl/src/smart_cs/domain/evidence.py
@@ -190,7 +190,7 @@ class LocalAssetStorage:
 
 Persist `asset_key` and serialized `VisualEvidence` against the originating message id, never in knowledge tables.
 
-- [ ] **Step 3: Use LangChain multimodal messages and structured output**
+- [x] **Step 3: Use LangChain multimodal messages and structured output**
 
 ```python
 # python-impl/src/smart_cs/agents/vision.py
@@ -224,7 +224,7 @@ class VisionAgent:
 
 In rule mode, images return `needs_clarification=True` with a visible `"规则模式不解析图片"` explanation. This prevents a no-model run from pretending to understand an image.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 ```bash
 cd python-impl
@@ -249,7 +249,7 @@ Expected: PASS; image assets remain separate from RAG documents.
 - Modify: `python-impl/src/smart_cs/infrastructure/repositories.py`
 - Create: `python-impl/tests/integration/test_safe_image_workflow.py`
 
-- [ ] **Step 1: Test safe composition and run tracing**
+- [x] **Step 1: Test safe composition and run tracing**
 
 ```python
 def test_clear_image_still_requires_user_confirmation(runtime, repo) -> None:
@@ -267,7 +267,7 @@ def test_uncertain_image_routes_to_handoff_draft_without_refund(runtime, repo) -
     assert repo.list_tickets("C001") == []
 ```
 
-- [ ] **Step 2: Extend structured plan and validate multimodal requirements**
+- [x] **Step 2: Extend structured plan and validate multimodal requirements**
 
 Add `"VisionAgent"` to the allowed `SupervisorDecision.agents`. At planning time, change `validate_decision(decision, has_image)` with these deterministic rules:
 
@@ -288,7 +288,7 @@ When evidence is usable:
 
 The configured Supervisor still chooses order and relevant specialists; deterministic nodes add mandatory evidence steps and inspect the resulting evidence rather than silently trusting a model.
 
-- [ ] **Step 3: Persist a real AgentRun record**
+- [x] **Step 3: Persist a real AgentRun record**
 
 Add table and repository operations:
 
@@ -310,11 +310,11 @@ GET /api/conversations/{conversation_id}/runs
 
 The endpoint returns `AgentRunRecord` entries plus related `ToolCall` records; it does not expose checkpoint internals.
 
-- [ ] **Step 4: Feed the existing confirmation node, not a new submit path**
+- [x] **Step 4: Feed the existing confirmation node, not a new submit path**
 
 Image-backed after-sales output must be a `draft_after_sales` result consumed by the existing LangGraph `confirm_action` node from plan 1. The only function allowed to create a ticket remains `AuthorizedToolExecutor.submit_confirmed_action`.
 
-- [ ] **Step 5: Test and commit**
+- [x] **Step 5: Test and commit**
 
 ```bash
 cd python-impl
@@ -333,7 +333,7 @@ Expected: PASS; no ticket exists before confirmation in text or image paths.
 - Modify: `python-impl/src/smart_cs/agents/guardrails.py`
 - Create: `python-impl/tests/api/test_image_message.py`
 
-- [ ] **Step 1: Add API tests**
+- [x] **Step 1: Add API tests**
 
 ```python
 def test_image_message_returns_pending_action_and_evidence_summary(client, clear_damage_jpeg) -> None:
@@ -359,7 +359,7 @@ def test_guard_never_says_refund_completed_before_confirmation(client, clear_dam
     assert "退款已完成" not in body["reply"]
 ```
 
-- [ ] **Step 2: Add a multipart endpoint**
+- [x] **Step 2: Add a multipart endpoint**
 
 Provide:
 
@@ -371,7 +371,7 @@ Accepted MIME types: image/jpeg, image/png
 
 The endpoint stores the original image, builds its data URL for `VisionAgent`, saves returned evidence, and invokes the same workflow used by text requests.
 
-- [ ] **Step 3: Enforce response phrases**
+- [x] **Step 3: Enforce response phrases**
 
 `ResponseGuard` must render:
 
@@ -383,7 +383,7 @@ uncertain evidence: 图片证据暂不能确认问题，已为您生成转人工
 
 It must reject model output containing `退款已完成` when the stored action status is not `submitted`.
 
-- [ ] **Step 4: Verify API and commit**
+- [x] **Step 4: Verify API and commit**
 
 ```bash
 cd python-impl
@@ -410,7 +410,7 @@ Expected: PASS.
 - Create: `docs/interview/agent-project-qa.md`
 - Modify: `docker-compose.yml`
 
-- [ ] **Step 1: Detect claims that cannot remain**
+- [x] **Step 1: Detect claims that cannot remain**
 
 Run:
 
@@ -420,7 +420,7 @@ rg -n -g '!docs/superpowers/plans/**' "金融|Java|Go|企业级|日均|准确率
 
 Expected: matches in legacy explanatory documents; each match must be removed or explicitly described as prior deleted demo code.
 
-- [ ] **Step 2: Replace public project description with truthful content**
+- [x] **Step 2: Replace public project description with truthful content**
 
 `README.md` must contain these sections and no performance claims:
 
@@ -455,7 +455,7 @@ Draft side effect -> interrupt confirmation -> authorised tool submission -> Res
 
 `docs/code-walkthrough.md` must link to `python-impl/src/smart_cs` modules in execution order. `docs/project-plan.md` must state the seven-day study route from Task 5.
 
-- [ ] **Step 3: Replace old interview documents rather than retaining numbers**
+- [x] **Step 3: Replace old interview documents rather than retaining numbers**
 
 Replace each legacy file `resume-template.md`, `star-method.md`, `project-qa.md`, and `baguwen.md` with this exact pointer:
 
@@ -505,11 +505,11 @@ Router 无副作用地识别意图、实体和风险；Supervisor 决定调用�
 上下文召回和上下文精确四项实际结果。
 ```
 
-- [ ] **Step 4: Keep deployment description aligned with implemented services**
+- [x] **Step 4: Keep deployment description aligned with implemented services**
 
 `docker-compose.yml` must contain only Milvus standalone dependency services and the Python API service used in plan 2. Remove Redis, Java, Go and Jaeger entries from the final study project description because the completed Python implementation does not depend on them.
 
-- [ ] **Step 5: Scan and commit documentation cleanup**
+- [x] **Step 5: Scan and commit documentation cleanup**
 
 ```bash
 rg -n -g '!docs/superpowers/plans/**' "金融|Java|Go|企业级|日均|准确率|FCR|CSAT|token.*40|FAISS|十万|92%|生产环境|事故" README.md docs python-impl
@@ -525,7 +525,7 @@ Expected: search returns no unsupported project claim; a remaining match is perm
 - Create: `docs/interview/learning-log.md`
 - Modify: `docs/project-plan.md`
 
-- [ ] **Step 1: Run final technical acceptance**
+- [x] **Step 1: Run final technical acceptance**
 
 ```bash
 docker compose up -d etcd minio standalone
@@ -537,7 +537,7 @@ python scripts/evaluate_rag.py
 
 Expected: all tests PASS and `data/evaluation/latest_results.md` is regenerated.
 
-- [ ] **Step 2: Remove displaced demo packages and rerun tests**
+- [x] **Step 2: Remove displaced demo packages and rerun tests**
 
 Delete only the legacy paths listed in this plan, then run:
 
@@ -548,7 +548,7 @@ pytest -q
 
 Expected: PASS with imports exclusively from `src/smart_cs`.
 
-- [ ] **Step 3: Write a seven-day mastery checklist**
+- [x] **Step 3: Write a seven-day mastery checklist**
 
 Create `docs/interview/learning-log.md` containing:
 
@@ -571,7 +571,7 @@ Create `docs/interview/learning-log.md` containing:
 生产部署或没有测量的准确率。
 ```
 
-- [ ] **Step 4: Commit final deliverable**
+- [x] **Step 4: Commit final deliverable**
 
 ```bash
 git add python-impl docs README.md docker-compose.yml
@@ -583,9 +583,9 @@ Expected: empty git status and a committed generated evaluation report.
 
 ## Acceptance Checklist
 
-- [ ] 图片保存在会话目录而非向量库；VisionAgent 使用 LangChain 多模态消息和结构化输出。
-- [ ] 售后写操作在文本和图片路径中均通过同一个 LangGraph 确认节点。
-- [ ] 低置信度证据不能触发售后提交，只能澄清或转人工草稿。
-- [ ] `AgentRun` 与 `ToolCall` 展示可讲解的执行轨迹。
-- [ ] 文档不声称未测量的效果、语言实现或生产能力。
-- [ ] 学习记录把一星期掌握目标映射到可运行命令。
+- [x] 图片保存在会话目录而非向量库；VisionAgent 使用 LangChain 多模态消息和结构化输出。
+- [x] 售后写操作在文本和图片路径中均通过同一个 LangGraph 确认节点。
+- [x] 低置信度证据不能触发售后提交，只能澄清或转人工草稿。
+- [x] `AgentRun` 与 `ToolCall` 展示可讲解的执行轨迹。
+- [x] 文档不声称未测量的效果、语言实现或生产能力。
+- [x] 学习记录把一星期掌握目标映射到可运行命令。

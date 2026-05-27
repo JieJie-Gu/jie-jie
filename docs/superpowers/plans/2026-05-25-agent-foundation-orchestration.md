@@ -96,7 +96,7 @@ python-impl/Dockerfile
 - Create: `python-impl/tests/api/test_health.py`
 - Modify: `python-impl/.env.example`
 
-- [ ] **Step 1: Write the failing API smoke test**
+- [x] **Step 1: Write the failing API smoke test**
 
 ```python
 # python-impl/tests/api/test_health.py
@@ -115,7 +115,7 @@ def test_health_reports_foundation_phase() -> None:
     }
 ```
 
-- [ ] **Step 2: Run the failing test**
+- [x] **Step 2: Run the failing test**
 
 Run:
 
@@ -126,7 +126,7 @@ pytest tests/api/test_health.py -q
 
 Expected: collection fails because `smart_cs` does not exist.
 
-- [ ] **Step 3: Create packaging and settings**
+- [x] **Step 3: Create packaging and settings**
 
 Use this dependency set in `python-impl/pyproject.toml`:
 
@@ -187,7 +187,7 @@ SMART_CS_LLM_BASE_URL=
 SMART_CS_LLM_API_KEY=
 ```
 
-- [ ] **Step 4: Implement the health application and verify**
+- [x] **Step 4: Implement the health application and verify**
 
 ```python
 # python-impl/src/smart_cs/main.py
@@ -210,7 +210,7 @@ pytest tests/api/test_health.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the package skeleton**
+- [x] **Step 5: Commit the package skeleton**
 
 ```bash
 git add python-impl/pyproject.toml python-impl/.env.example python-impl/src/smart_cs python-impl/tests
@@ -230,7 +230,7 @@ git commit -m "feat: create smart cs python application skeleton"
 - Create: `python-impl/tests/unit/test_tools.py`
 - Create: `python-impl/scripts/seed_demo_data.py`
 
-- [ ] **Step 1: Write failing authorization tests**
+- [x] **Step 1: Write failing authorization tests**
 
 ```python
 # python-impl/tests/unit/test_tools.py
@@ -255,7 +255,7 @@ def test_after_sales_only_creates_draft_before_confirmation(repo) -> None:
     assert repo.list_tickets("C001") == []
 ```
 
-- [ ] **Step 2: Run and observe missing tool layer**
+- [x] **Step 2: Run and observe missing tool layer**
 
 ```bash
 cd python-impl
@@ -264,7 +264,7 @@ pytest tests/unit/test_tools.py -q
 
 Expected: FAIL importing the new tool layer.
 
-- [ ] **Step 3: Implement repository entities and LangChain tool schemas**
+- [x] **Step 3: Implement repository entities and LangChain tool schemas**
 
 Persist `Customer`, `Product`, `Order`, `PendingAction`, `Ticket`, `Message`, and `ToolCall` in SQLAlchemy. Define read and draft tools with official tool decorators:
 
@@ -326,7 +326,7 @@ Rules in `cancel_pending_action`:
 2. Mark it `cancelled` without creating a `Ticket`.
 3. Record cancellation in `ToolCall`.
 
-- [ ] **Step 4: Seed a demonstrable customer case and run tests**
+- [x] **Step 4: Seed a demonstrable customer case and run tests**
 
 `seed_demo_data.py` must insert customer `C001`, order `O1001`, a delivered shoe product, and customer `C002` so the ownership test is meaningful.
 
@@ -338,7 +338,7 @@ python scripts/seed_demo_data.py
 
 Expected: tests PASS and the script prints inserted demo identifiers `C001` and `O1001`.
 
-- [ ] **Step 5: Commit tools and persistence**
+- [x] **Step 5: Commit tools and persistence**
 
 ```bash
 git add python-impl/src/smart_cs/domain python-impl/src/smart_cs/infrastructure python-impl/src/smart_cs/tools python-impl/tests/unit python-impl/scripts
@@ -358,7 +358,7 @@ git commit -m "feat: add authorised ecommerce business tools"
 - Create: `python-impl/tests/unit/test_router_supervisor.py`
 - Create: `python-impl/tests/integration/test_action_confirmation.py`
 
-- [ ] **Step 1: Write tests showing responsibilities and suspension**
+- [x] **Step 1: Write tests showing responsibilities and suspension**
 
 ```python
 # python-impl/tests/unit/test_router_supervisor.py
@@ -396,7 +396,7 @@ def test_rejected_confirmation_cancels_draft_without_ticket(runtime, repo) -> No
     assert repo.list_tickets("C001") == []
 ```
 
-- [ ] **Step 2: Define structured agent contracts**
+- [x] **Step 2: Define structured agent contracts**
 
 ```python
 # python-impl/src/smart_cs/agents/state.py
@@ -426,7 +426,7 @@ class RuntimeState(TypedDict, total=False):
     reply: str
 ```
 
-- [ ] **Step 3: Use LangChain structured output for configured models**
+- [x] **Step 3: Use LangChain structured output for configured models**
 
 `RulesDecisionModel` is the no-key learning mode and must be named in logs. `LangChainDecisionModel` is the configured model path:
 
@@ -465,7 +465,7 @@ def configured_chat_model(settings: Settings) -> BaseChatModel:
 
 Implement `RulesDecisionModel` with explicit keyword-to-route and intent-to-plan dictionaries for tests and local study runs. It must not be used for RAG metric claims.
 
-- [ ] **Step 4: Keep Supervisor authority deterministic after model planning**
+- [x] **Step 4: Keep Supervisor authority deterministic after model planning**
 
 ```python
 # python-impl/src/smart_cs/agents/router.py
@@ -511,7 +511,7 @@ class SupervisorAgent:
 
 The distinction is intentional: the LLM selects the useful specialists and order; application policy owns permissions and confirmation.
 
-- [ ] **Step 5: Compile the LangGraph workflow with durable confirmation**
+- [x] **Step 5: Compile the LangGraph workflow with durable confirmation**
 
 ```python
 # python-impl/src/smart_cs/application/agent_runtime.py
@@ -581,7 +581,7 @@ class AgentRuntime:
 
 Ensure the interrupt node has no database write before `interrupt`; LangGraph re-enters the node after resume.
 
-- [ ] **Step 6: Run orchestration tests and commit**
+- [x] **Step 6: Run orchestration tests and commit**
 
 ```bash
 cd python-impl
@@ -603,7 +603,7 @@ Expected: tests PASS; a ticket exists only after `confirm`.
 - Create: `python-impl/tests/api/test_conversations.py`
 - Modify: `python-impl/Dockerfile`
 
-- [ ] **Step 1: Test that HTTP follows graph suspension and resumption**
+- [x] **Step 1: Test that HTTP follows graph suspension and resumption**
 
 ```python
 def test_http_after_sales_requires_confirm_then_returns_ticket(client) -> None:
@@ -623,13 +623,13 @@ def test_http_after_sales_requires_confirm_then_returns_ticket(client) -> None:
     assert completed["reply"].startswith("售后申请已受理")
 ```
 
-- [ ] **Step 2: Build dependencies without requiring an API key**
+- [x] **Step 2: Build dependencies without requiring an API key**
 
 `build_runtime(settings)` must select `RulesDecisionModel()` when `settings.model_mode == "rules"` and otherwise wrap `configured_chat_model(settings)` in `LangChainDecisionModel`. Startup must create the business and checkpoint directories before constructing SQLite connections.
 
 `ConversationService.confirm` first loads the conversation and verifies its stored `customer_id` matches the authenticated/demo caller before invoking `runtime.confirm`. It maps the graph interrupt payload into the HTTP `pending_action` response; endpoints do not inspect checkpoint storage directly.
 
-- [ ] **Step 3: Implement thin endpoints**
+- [x] **Step 3: Implement thin endpoints**
 
 Provide exactly:
 
@@ -643,7 +643,7 @@ GET  /api/conversations/{conversation_id}/tool-calls
 
 Endpoints delegate to `ConversationService`; they do not reproduce routing or authorization logic.
 
-- [ ] **Step 4: Verify API and runnable service**
+- [x] **Step 4: Verify API and runnable service**
 
 ```bash
 cd python-impl
@@ -653,7 +653,7 @@ uvicorn smart_cs.main:app --app-dir src --host 127.0.0.1 --port 8000
 
 Expected: all tests PASS; `/health` responds with the foundation phase JSON and a local rule-mode after-sales request pauses before submission.
 
-- [ ] **Step 5: Commit API delivery**
+- [x] **Step 5: Commit API delivery**
 
 ```bash
 git add python-impl/src/smart_cs python-impl/tests python-impl/Dockerfile
@@ -662,9 +662,9 @@ git commit -m "feat: expose safe conversation workflow api"
 
 ## Acceptance Checklist
 
-- [ ] `RouterAgent` and `SupervisorAgent` are distinct nodes and distinct testable responsibilities.
-- [ ] A configured chat model uses LangChain `.with_structured_output`; rule mode is visibly labelled as non-evaluation development mode.
-- [ ] Tool schemas use `@tool`, while authorization remains application code.
-- [ ] A side-effecting action is suspended with `interrupt` and resumed with `Command`.
-- [ ] SQLite contains both business data and LangGraph checkpoints.
-- [ ] No RAG or image claims appear in foundation test output.
+- [x] `RouterAgent` and `SupervisorAgent` are distinct nodes and distinct testable responsibilities.
+- [x] A configured chat model uses LangChain `.with_structured_output`; rule mode is visibly labelled as non-evaluation development mode.
+- [x] Tool schemas use `@tool`, while authorization remains application code.
+- [x] A side-effecting action is suspended with `interrupt` and resumed with `Command`.
+- [x] SQLite contains both business data and LangGraph checkpoints.
+- [x] No RAG or image claims appear in foundation test output.
