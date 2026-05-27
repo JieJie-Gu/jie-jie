@@ -165,12 +165,27 @@ class SqlRepository:
             return managed_session.get(Customer, customer_id) is not None
 
     def search_products(self, query: str) -> list[Product]:
-        text = query.strip()
+        raw_text = query.strip()
+        text = raw_text
+        terms = [raw_text] if raw_text else []
+        for intent_word in ("推荐", "商品", "产品", "价格", "请", "帮我", "一下"):
+            text = text.replace(intent_word, " ")
+        terms.extend(term for term in text.split() if term and term not in terms)
+
         with self.database.session() as session:
             statement = select(Product).where(Product.active.is_(True))
-            if text:
+            if terms:
                 statement = statement.where(
-                    or_(Product.name.contains(text), Product.description.contains(text))
+                    or_(
+                        *(
+                            condition
+                            for term in terms
+                            for condition in (
+                                Product.name.contains(term),
+                                Product.description.contains(term),
+                            )
+                        )
+                    )
                 )
             return list(session.scalars(statement.order_by(Product.id)))
 
@@ -277,9 +292,12 @@ class SqlRepository:
                 )
             )
 
-    def list_tool_calls(self) -> list[ToolCall]:
+    def list_tool_calls(self, customer_id: str | None = None) -> list[ToolCall]:
         with self.database.session() as session:
-            return list(session.scalars(select(ToolCall).order_by(ToolCall.id)))
+            statement = select(ToolCall)
+            if customer_id is not None:
+                statement = statement.where(ToolCall.customer_id == customer_id)
+            return list(session.scalars(statement.order_by(ToolCall.id)))
 
     def record_tool_call(
         self,
