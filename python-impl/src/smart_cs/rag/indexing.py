@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 
 
 HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3")]
+KNOWLEDGE_CATEGORIES = {
+    "after_sales_policy": "after_sales",
+    "shipping_policy": "shipping",
+    "product_guide": "product",
+    "faq": "faq",
+}
 
 
 def _sentences(text: str) -> list[str]:
@@ -44,4 +51,12 @@ def markdown_sentence_documents(
                     },
                 )
             )
+    return documents
+
+
+def load_knowledge_documents(knowledge_directory: Path) -> list[Document]:
+    documents: list[Document] = []
+    for document_id, category in KNOWLEDGE_CATEGORIES.items():
+        markdown = (knowledge_directory / f"{document_id}.md").read_text(encoding="utf-8")
+        documents.extend(markdown_sentence_documents(document_id, category, markdown))
     return documents

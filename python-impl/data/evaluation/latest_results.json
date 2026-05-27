@@ -1,0 +1,94 @@
+{
+  "generated_at": "2026-05-27T06:32:28.883530+00:00",
+  "case_count": 8,
+  "retrieval_mode": "offline_markdown_baseline",
+  "embedding_model": "not_used",
+  "metrics": {
+    "faithfulness": 1.0,
+    "answer_relevancy": 1.0,
+    "context_recall": 1.0,
+    "context_precision": 0.2708
+  },
+  "cases": [
+    {
+      "question": "签收后几天可以申请退货？",
+      "category": "after_sales",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_recall": 1.0,
+        "context_precision": 0.25
+      }
+    },
+    {
+      "question": "退货商品需要保持什么状态？",
+      "category": "after_sales",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_recall": 1.0,
+        "context_precision": 0.25
+      }
+    },
+    {
+      "question": "已发货是什么意思？",
+      "category": "shipping",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_recall": 1.0,
+        "context_precision": 0.25
+      }
+    },
+    {
+      "question": "退货运费按什么规则承担？",
+      "category": "after_sales",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_recall": 1.0,
+        "context_precision": 0.25
+      }
+    },
+    {
+      "question": "跑鞋怎么保养？",
+      "category": "product",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_recall": 1.0,
+        "context_precision": 0.25
+      }
+    },
+    {
+      "question": "鞋类商品尺码怎么参考？",
+      "category": "product",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_recall": 1.0,
+        "context_precision": 0.25
+      }
+    },
+    {
+      "question": "什么时候需要人工处理？",
+      "category": "faq",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_recall": 1.0,
+        "context_precision": 0.3333333333333333
+      }
+    },
+    {
+      "question": "确认后系统才会提交申请吗？",
+      "category": "faq",
+      "metrics": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_recall": 1.0,
+        "context_precision": 0.3333333333333333
+      }
+    }
+  ]
+}
