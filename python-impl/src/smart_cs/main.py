@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.engine import make_url
 
 from smart_cs.api.routers.conversations import router as conversations_router
+from smart_cs.agents.knowledge import KnowledgeAgent
 from smart_cs.application.agent_runtime import AgentRuntime
 from smart_cs.application.conversation_service import ConversationService
 from smart_cs.config import Settings
@@ -36,7 +37,9 @@ class RuntimeBundle:
     runtime: AgentRuntime
 
 
-def build_runtime(settings: Settings) -> RuntimeBundle:
+def build_runtime(
+    settings: Settings, knowledge_agent: KnowledgeAgent | None = None
+) -> RuntimeBundle:
     _ensure_sqlite_parent(settings.database_url)
     settings.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -49,17 +52,29 @@ def build_runtime(settings: Settings) -> RuntimeBundle:
         decision_model = RulesDecisionModel()
     else:
         decision_model = LangChainDecisionModel(configured_chat_model(settings))
+    if knowledge_agent is None and settings.rag_enabled:
+        from smart_cs.rag.embeddings import LocalSentenceEmbeddings
+        from smart_cs.rag.retrieval import RuleBasedQueryRewriter
+        from smart_cs.rag.vector_store import connect_hybrid_store
+
+        embeddings = LocalSentenceEmbeddings(settings.embedding_model)
+        knowledge_agent = KnowledgeAgent(
+            connect_hybrid_store(settings, embeddings), RuleBasedQueryRewriter()
+        )
     runtime = AgentRuntime(
         executor=AuthorizedToolExecutor(repository),
         decision_model=decision_model,
         checkpoint_path=settings.checkpoint_path,
+        knowledge_agent=knowledge_agent,
     )
     return RuntimeBundle(database=database, repository=repository, runtime=runtime)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, knowledge_agent: KnowledgeAgent | None = None
+) -> FastAPI:
     app_settings = settings or Settings()
-    bundle = build_runtime(app_settings)
+    bundle = build_runtime(app_settings, knowledge_agent)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:

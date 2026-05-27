@@ -15,3 +15,4 @@ class Settings(BaseSettings):
     milvus_uri: str = "http://localhost:19530"
     milvus_collection: str = "smart_cs_knowledge"
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    rag_enabled: bool = False

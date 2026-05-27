@@ -19,6 +19,8 @@ class RulesDecisionModel:
     _handoff_keywords = ("转人工", "人工客服", "投诉", "人工处理")
     _product_keywords = ("商品", "产品", "推荐", "价格", "跑鞋")
     _order_keywords = ("订单", "物流", "发货", "收货", "配送")
+    _knowledge_domain_keywords = ("退货", "退款", "售后", "换货", "物流", "发货", "配送", "运费", "保养", "尺码")
+    _knowledge_question_keywords = ("规则", "政策", "多久", "几天", "期限", "怎么", "如何", "说明", "什么")
 
     def route(self, message: str) -> RouteAnalysis:
         entities: dict[str, str] = {}
@@ -28,6 +30,10 @@ class RulesDecisionModel:
 
         if self._contains(message, self._handoff_keywords):
             return RouteAnalysis(intent="handoff", entities=entities, risk="high")
+        if self._contains(message, self._knowledge_domain_keywords) and self._contains(
+            message, self._knowledge_question_keywords
+        ):
+            return RouteAnalysis(intent="knowledge", entities=entities)
         if self._contains(message, self._after_sales_keywords):
             return RouteAnalysis(intent="after_sales", entities=entities, risk="medium")
         if self._contains(message, self._product_keywords):

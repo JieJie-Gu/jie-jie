@@ -14,6 +14,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from smart_cs.agents.guardrails import ResponseGuard
+from smart_cs.agents.knowledge import KnowledgeAgent
 from smart_cs.agents.router import RouterAgent, RoutingDecisionModel
 from smart_cs.agents.specialists import SpecialistDispatcher
 from smart_cs.agents.state import RouteAnalysis, RuntimeState, SupervisorDecision
@@ -119,6 +120,7 @@ class AgentRuntime:
         executor: AuthorizedToolExecutor,
         decision_model: DecisionModel,
         checkpoint_path: str | Path,
+        knowledge_agent: KnowledgeAgent | None = None,
         turn_lease_ttl_seconds: float = TURN_LEASE_TTL_SECONDS,
         turn_lease_renew_interval_seconds: float | None = None,
     ) -> None:
@@ -139,7 +141,7 @@ class AgentRuntime:
         self.executor = executor
         self.router = RouterAgent(decision_model)
         self.supervisor = SupervisorAgent(decision_model)
-        self.specialists = SpecialistDispatcher(executor)
+        self.specialists = SpecialistDispatcher(executor, knowledge_agent)
         self.guard = ResponseGuard()
         self._turn_lease_ttl_seconds = turn_lease_ttl_seconds
         self._turn_lease_renew_interval_seconds = renew_interval_seconds

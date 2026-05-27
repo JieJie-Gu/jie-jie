@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
+from smart_cs.agents.knowledge import KnowledgeAgent
 from smart_cs.tools.executor import AuthorizedToolExecutor, TurnFence
 
 
@@ -18,8 +19,11 @@ class SpecialistExecution:
 class SpecialistDispatcher:
     """Execute an already validated supervisor plan through authorized tools."""
 
-    def __init__(self, executor: AuthorizedToolExecutor) -> None:
+    def __init__(
+        self, executor: AuthorizedToolExecutor, knowledge_agent: KnowledgeAgent | None = None
+    ) -> None:
         self.executor = executor
+        self.knowledge_agent = knowledge_agent
         self._registry: dict[
             str,
             Callable[
@@ -100,15 +104,17 @@ class SpecialistDispatcher:
             "lookup_order", {"customer_id": customer_id, "order_id": order_id}
         )
 
-    @staticmethod
     def _knowledge(
-        _message: str,
+        self,
+        message: str,
         _customer_id: str,
         _route: RouteAnalysis,
         _conversation_id: str | None,
         _idempotency_key: str | None,
         _turn_fence: TurnFence | None,
     ) -> dict[str, Any]:
+        if self.knowledge_agent is not None:
+            return self.knowledge_agent.answer(message).as_result()
         return {"status": "unavailable", "message": "知识库将在 RAG 阶段启用。"}
 
     def _after_sales(

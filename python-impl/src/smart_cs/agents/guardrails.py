@@ -22,6 +22,8 @@ class ResponseGuard:
             return f"人工服务申请已提交，工单编号为 {result['ticket_id']}。"
         if status == "cancelled" and action_type in {"after_sales", "handoff"}:
             return "已取消本次申请。"
+        if status == "knowledge_answer":
+            return str(result["answer"])
         if "message" in result:
             return str(result["message"])
         if "order_id" in result:

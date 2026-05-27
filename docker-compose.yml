@@ -74,6 +74,7 @@ services:
       SMART_CS_MILVUS_URI: http://standalone:19530
       SMART_CS_MILVUS_COLLECTION: smart_cs_knowledge
       SMART_CS_EMBEDDING_MODEL: BAAI/bge-small-zh-v1.5
+      SMART_CS_RAG_ENABLED: "true"
     depends_on:
       standalone:
         condition: service_healthy

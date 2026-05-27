@@ -26,3 +26,16 @@ def build_hybrid_store(
         consistency_level="Strong",
         drop_old=drop_old,
     )
+
+
+def connect_hybrid_store(settings: Settings, embeddings: Embeddings) -> Milvus:
+    """Connect retrieval to an indexed collection without rebuilding it."""
+
+    return Milvus(
+        embedding_function=embeddings,
+        builtin_function=BM25BuiltInFunction(analyzer_params={"type": "chinese"}),
+        vector_field=["dense", "sparse"],
+        connection_args={"uri": settings.milvus_uri},
+        collection_name=settings.milvus_collection,
+        consistency_level="Strong",
+    )
