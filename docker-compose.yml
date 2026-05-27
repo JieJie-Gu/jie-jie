@@ -1,21 +1,66 @@
-version: '3.8'
-
 services:
-  # Redis - 短期记忆存储
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
+  etcd:
+    container_name: smart-cs-etcd
+    image: quay.io/coreos/etcd:v3.5.25
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
     volumes:
-      - redis_data:/data
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir=/etcd
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
       retries: 3
 
-  # Python实现
+  minio:
+    container_name: smart-cs-minio
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  standalone:
+    container_name: smart-cs-milvus
+    image: milvusdb/milvus:v2.6.15
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MQ_TYPE: woodpecker
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
   python-agent:
     build:
       context: ./python-impl
@@ -23,54 +68,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      - MODEL_NAME=${MODEL_NAME:-gpt-4o}
-      - REDIS_URL=redis://redis:6379/0
-      - OTEL_SERVICE_NAME=smart-cs-python
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      SMART_CS_DATABASE_URL: sqlite:///./data/smart_cs.db
+      SMART_CS_CHECKPOINT_PATH: data/checkpoints.db
+      SMART_CS_MODEL_MODE: rules
+      SMART_CS_MILVUS_URI: http://standalone:19530
+      SMART_CS_MILVUS_COLLECTION: smart_cs_knowledge
+      SMART_CS_EMBEDDING_MODEL: BAAI/bge-small-zh-v1.5
     depends_on:
-      redis:
+      standalone:
         condition: service_healthy
-
-  # Java实现
-  java-agent:
-    build:
-      context: ./java-impl
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  # Go实现
-  go-agent:
-    build:
-      context: ./go-impl
-      dockerfile: Dockerfile
-    ports:
-      - "8090:8090"
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - PORT=8090
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  # Jaeger - 全链路追踪可视化 (可选)
-  jaeger:
-    image: jaegertracing/all-in-one:1.62
-    ports:
-      - "16686:16686"   # Jaeger UI
-      - "4317:4317"     # OTLP gRPC
-      - "4318:4318"     # OTLP HTTP
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-
-volumes:
-  redis_data:

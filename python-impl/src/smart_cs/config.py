@@ -12,3 +12,6 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     llm_base_url: str | None = None
     llm_api_key: str | None = None
+    milvus_uri: str = "http://localhost:19530"
+    milvus_collection: str = "smart_cs_knowledge"
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"
