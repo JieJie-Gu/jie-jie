@@ -93,7 +93,7 @@ docker-compose.yml
 - Create: `python-impl/tests/unit/test_markdown_windows.py`
 - Modify: `python-impl/pyproject.toml`
 
-- [ ] **Step 1: Write the failing indexing test**
+- [x] **Step 1: Write the failing indexing test**
 
 ```python
 # python-impl/tests/unit/test_markdown_windows.py
@@ -110,7 +110,7 @@ def test_headers_and_neighbor_sentence_window_are_metadata() -> None:
     assert "商品应保持完好。" in documents[0].metadata["window_text"]
 ```
 
-- [ ] **Step 2: Add dependencies and run red test**
+- [x] **Step 2: Add dependencies and run red test**
 
 Add:
 
@@ -127,7 +127,7 @@ pytest tests/unit/test_markdown_windows.py -q
 
 Expected: FAIL importing `smart_cs.rag.indexing`.
 
-- [ ] **Step 3: Implement header splitting with window enrichment**
+- [x] **Step 3: Implement header splitting with window enrichment**
 
 ```python
 # python-impl/src/smart_cs/rag/indexing.py
@@ -162,7 +162,7 @@ def markdown_sentence_documents(document_id: str, category: str, markdown: str) 
     return documents
 ```
 
-- [ ] **Step 4: Write four small curated Markdown files and verify**
+- [x] **Step 4: Write four small curated Markdown files and verify**
 
 Documents must use `#` and `##` headings and contain only demonstrable study data: return period, evidence requirement, shipping status explanation, and sample product maintenance facts. Do not insert real-company claims.
 
@@ -187,7 +187,7 @@ Expected: PASS.
 - Modify: `python-impl/.env.example`
 - Modify: `docker-compose.yml`
 
-- [ ] **Step 1: Add a Milvus integration test**
+- [x] **Step 1: Add a Milvus integration test**
 
 ```python
 # python-impl/tests/integration/test_milvus_hybrid.py
@@ -210,7 +210,7 @@ def test_hybrid_search_returns_filtered_after_sales_sentence(settings, embedding
     assert all(item.metadata["category"] == "after_sales" for item in results)
 ```
 
-- [ ] **Step 2: Configure a real local embedding and Milvus Standalone**
+- [x] **Step 2: Configure a real local embedding and Milvus Standalone**
 
 Add:
 
@@ -237,7 +237,7 @@ SMART_CS_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
 
 Replace the repository root `docker-compose.yml` with Milvus official standalone dependencies (`etcd`, `minio`, `standalone`) and the Python API service; pin the same Milvus version used in the test environment and expose port `19530`.
 
-- [ ] **Step 3: Wrap local embeddings in the LangChain interface**
+- [x] **Step 3: Wrap local embeddings in the LangChain interface**
 
 ```python
 # python-impl/src/smart_cs/rag/embeddings.py
@@ -256,7 +256,7 @@ class LocalSentenceEmbeddings(Embeddings):
         return self.embed_documents([text])[0]
 ```
 
-- [ ] **Step 4: Use the official Milvus integration rather than constructing sparse vectors**
+- [x] **Step 4: Use the official Milvus integration rather than constructing sparse vectors**
 
 ```python
 # python-impl/src/smart_cs/rag/vector_store.py
@@ -280,7 +280,7 @@ def build_hybrid_store(settings, embeddings: Embeddings, documents: list[Documen
 
 `scripts/index_knowledge.py` reads the four Markdown files, calls `markdown_sentence_documents`, builds `LocalSentenceEmbeddings`, and calls `build_hybrid_store(..., drop_old=True)`. No application module creates BM25 vocabulary, sparse vectors, or its own reciprocal-rank algorithm.
 
-- [ ] **Step 5: Start Milvus, index, test, and commit**
+- [x] **Step 5: Start Milvus, index, test, and commit**
 
 ```bash
 docker compose up -d etcd minio standalone
@@ -304,7 +304,7 @@ Expected: the integration test PASSes with a result in the `after_sales` categor
 - Modify: `python-impl/src/smart_cs/api/dependencies.py`
 - Create: `python-impl/tests/api/test_knowledge_reply.py`
 
-- [ ] **Step 1: Test allow-listed filtering and citation response**
+- [x] **Step 1: Test allow-listed filtering and citation response**
 
 ```python
 def test_query_category_filter_is_not_user_supplied_expression() -> None:
@@ -320,7 +320,7 @@ def test_knowledge_answer_exposes_window_citation(fake_store) -> None:
     assert "签收后七天" in answer.contexts[0]
 ```
 
-- [ ] **Step 2: Implement only approved query enhancement**
+- [x] **Step 2: Implement only approved query enhancement**
 
 ```python
 # python-impl/src/smart_cs/rag/retrieval.py
@@ -358,11 +358,11 @@ contexts = [document.metadata["window_text"] for document in documents]
 
 It answers only when retrieved evidence contains relevant policy text, returns `document_id` and `header_path` citations, and returns a clarification/handoff message when evidence is insufficient. It never returns order status from these documents.
 
-- [ ] **Step 3: Connect the existing Supervisor decision to `KnowledgeAgent`**
+- [x] **Step 3: Connect the existing Supervisor decision to `KnowledgeAgent`**
 
 Add `KnowledgeAgent` to the specialist registry. When the Supervisor plan includes it, invoke the knowledge agent and send citations to `ResponseGuard`. Do not introduce another router or free-form retrieval tool.
 
-- [ ] **Step 4: Verify API and commit**
+- [x] **Step 4: Verify API and commit**
 
 ```bash
 cd python-impl
@@ -381,7 +381,7 @@ Expected: PASS; response citations identify the Markdown section and window evid
 - Create: `python-impl/scripts/evaluate_rag.py`
 - Create: `python-impl/tests/unit/test_rag_evaluation.py`
 
-- [ ] **Step 1: Add deterministic scoring tests**
+- [x] **Step 1: Add deterministic scoring tests**
 
 ```python
 def test_context_precision_and_recall_on_labelled_case() -> None:
@@ -391,7 +391,7 @@ def test_context_precision_and_recall_on_labelled_case() -> None:
     assert result.context_recall == 0.5
 ```
 
-- [ ] **Step 2: Add a small labelled evaluation set**
+- [x] **Step 2: Add a small labelled evaluation set**
 
 Create eight Chinese questions distributed over `after_sales`, `shipping`, `product`, and `faq`. Each record contains:
 
@@ -404,7 +404,7 @@ Create eight Chinese questions distributed over `after_sales`, `shipping`, `prod
 }
 ```
 
-- [ ] **Step 3: Implement and report exactly four metrics**
+- [x] **Step 3: Implement and report exactly four metrics**
 
 `evaluate_rag.py` indexes the curated knowledge, queries `KnowledgeAgent`, computes:
 
@@ -422,7 +422,7 @@ python-impl/data/evaluation/latest_results.md
 
 The Markdown file is generated from the numeric JSON in the same run and includes case count, model mode, embedding model and timestamp. Documentation in plan 3 links to this generated artifact; it does not hard-code invented scores.
 
-- [ ] **Step 4: Execute and commit measured output**
+- [x] **Step 4: Execute and commit measured output**
 
 ```bash
 cd python-impl
@@ -436,9 +436,9 @@ Expected: both result files exist and contain only the four approved metric name
 
 ## Acceptance Checklist
 
-- [ ] Raw text knowledge is Markdown; image evidence is not written to Milvus.
-- [ ] Indexing visibly uses `MarkdownHeaderTextSplitter` and sentence windows.
-- [ ] Retrieval visibly uses `BM25BuiltInFunction`, dense embeddings and RRF.
-- [ ] User input cannot provide arbitrary Milvus expressions; filtering is allow-listed.
-- [ ] Knowledge answers contain citations and do not fabricate real-time order status.
-- [ ] Evaluation output reports only measured Faithfulness, Answer Relevancy, Context Recall and Context Precision.
+- [x] Raw text knowledge is Markdown; image evidence is not written to Milvus.
+- [x] Indexing visibly uses `MarkdownHeaderTextSplitter` and sentence windows.
+- [x] Retrieval visibly uses `BM25BuiltInFunction`, dense embeddings and RRF.
+- [x] User input cannot provide arbitrary Milvus expressions; filtering is allow-listed.
+- [x] Knowledge answers contain citations and do not fabricate real-time order status.
+- [x] Evaluation output reports only measured Faithfulness, Answer Relevancy, Context Recall and Context Precision.

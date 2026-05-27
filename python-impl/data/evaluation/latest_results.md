@@ -1,6 +1,6 @@
 # RAG Acceptance Results
 
-- Generated at: `2026-05-27T06:38:24.553445+00:00`
+- Generated at: `2026-05-27T07:59:21.883531+00:00`
 - Retrieval mode: `offline_markdown_baseline`
 - Embedding model: `not_used`
 - Case count: `8`
