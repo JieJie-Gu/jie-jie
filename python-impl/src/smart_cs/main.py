@@ -11,6 +11,7 @@ from sqlalchemy.engine import make_url
 
 from smart_cs.api.routers.conversations import router as conversations_router
 from smart_cs.agents.knowledge import KnowledgeAgent
+from smart_cs.agents.vision import LangChainVisionModel, RulesVisionModel, VisionAgent
 from smart_cs.application.agent_runtime import AgentRuntime
 from smart_cs.application.conversation_service import ConversationService
 from smart_cs.config import Settings
@@ -27,6 +28,7 @@ from smart_cs.infrastructure.model_factory import (
     configured_chat_model,
 )
 from smart_cs.infrastructure.repositories import SqlRepository
+from smart_cs.infrastructure.assets import LocalAssetStorage
 from smart_cs.tools.executor import AuthorizedToolExecutor
 
 
@@ -71,7 +73,10 @@ def build_runtime(
 
 
 def create_app(
-    settings: Settings | None = None, knowledge_agent: KnowledgeAgent | None = None
+    settings: Settings | None = None,
+    knowledge_agent: KnowledgeAgent | None = None,
+    vision_agent: VisionAgent | None = None,
+    asset_storage: LocalAssetStorage | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     bundle = build_runtime(app_settings, knowledge_agent)
@@ -89,9 +94,20 @@ def create_app(
     app.state.database = bundle.database
     app.state.repository = bundle.repository
     app.state.runtime = bundle.runtime
+    if vision_agent is None:
+        if app_settings.model_mode.lower() == "rules":
+            vision_agent = VisionAgent(RulesVisionModel())
+        else:
+            vision_agent = VisionAgent(
+                LangChainVisionModel(configured_chat_model(app_settings))
+            )
+    if asset_storage is None:
+        asset_storage = LocalAssetStorage(app_settings.asset_root)
     app.state.service = ConversationService(
         repository=bundle.repository,
         runtime=bundle.runtime,
+        vision_agent=vision_agent,
+        asset_storage=asset_storage,
     )
     _register_error_handlers(app)
     app.include_router(conversations_router)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 
 from smart_cs.api.dependencies import get_service
 from smart_cs.api.schemas import (
@@ -30,6 +30,24 @@ def send_message(
     service: ConversationService = Depends(get_service),
 ) -> dict:
     return service.send_message(conversation_id, request.customer_id, request.content)
+
+
+@router.post("/{conversation_id}/messages-with-image", response_model=ConversationWorkflowResponse)
+async def send_message_with_image(
+    conversation_id: str,
+    customer_id: str = Form(min_length=1),
+    content: str = Form(min_length=1),
+    image: UploadFile = File(...),
+    service: ConversationService = Depends(get_service),
+) -> dict:
+    return service.send_message_with_image(
+        conversation_id,
+        customer_id,
+        content,
+        image.filename or "image",
+        image.content_type or "application/octet-stream",
+        await image.read(),
+    )
 
 
 @router.post("/{conversation_id}/actions/confirm", response_model=ConversationWorkflowResponse)

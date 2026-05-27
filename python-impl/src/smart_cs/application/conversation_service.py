@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 from typing import Any
 from uuid import uuid4
 
 from smart_cs.application.agent_runtime import AgentRuntime
+from smart_cs.agents.vision import VisionAgent
+from smart_cs.infrastructure.assets import LocalAssetStorage
 from smart_cs.domain.errors import ToolPermissionError
 from smart_cs.domain.models import ToolCall
 from smart_cs.infrastructure.repositories import SqlRepository
@@ -12,9 +15,18 @@ from smart_cs.infrastructure.repositories import SqlRepository
 class ConversationService:
     """Application boundary for HTTP conversation operations."""
 
-    def __init__(self, *, repository: SqlRepository, runtime: AgentRuntime) -> None:
+    def __init__(
+        self,
+        *,
+        repository: SqlRepository,
+        runtime: AgentRuntime,
+        vision_agent: VisionAgent | None = None,
+        asset_storage: LocalAssetStorage | None = None,
+    ) -> None:
         self.repository = repository
         self.runtime = runtime
+        self.vision_agent = vision_agent
+        self.asset_storage = asset_storage
 
     def create_conversation(self, customer_id: str) -> dict[str, str]:
         self._require_demo_customer(customer_id)
@@ -42,6 +54,35 @@ class ConversationService:
             conversation_id, customer_id, action_id, approved=approved
         )
         return self._http_result(result)
+
+    def send_message_with_image(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        message: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        self.repository.require_conversation_owner(conversation_id, customer_id)
+        if self.vision_agent is None or self.asset_storage is None:
+            raise ValueError("Image evidence processing is not configured")
+        asset_key = self.asset_storage.save(conversation_id, filename, content_type, content)
+        encoded_image = base64.b64encode(content).decode("ascii")
+        evidence = self.vision_agent.inspect(
+            f"data:{content_type};base64,{encoded_image}", message
+        )
+        workflow_message = message
+        if not evidence.usable_for_draft:
+            workflow_message = f"转人工：图片证据暂不能确认问题。用户描述：{message}"
+        result = self._http_result(
+            self.runtime.invoke(conversation_id, customer_id, workflow_message)
+        )
+        if not evidence.usable_for_draft and result["status"] == "pending_confirmation":
+            result["reply"] = "图片证据暂不能确认问题，已为您生成转人工申请草稿，请确认。"
+        result["visual_evidence"] = evidence.model_dump()
+        result["asset_key"] = asset_key
+        return result
 
     def list_tool_calls(self, conversation_id: str, customer_id: str) -> list[dict[str, Any]]:
         self.repository.require_conversation_owner(conversation_id, customer_id)

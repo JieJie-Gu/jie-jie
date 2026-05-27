@@ -16,3 +16,4 @@ class Settings(BaseSettings):
     milvus_collection: str = "smart_cs_knowledge"
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     rag_enabled: bool = False
+    asset_root: Path = Path("data/assets")

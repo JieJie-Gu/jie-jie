@@ -32,6 +32,8 @@ class ConversationWorkflowResponse(BaseModel):
     result: dict[str, Any] | None = None
     agents_invoked: list[str] = Field(default_factory=list)
     pending_action: dict[str, Any] | None = None
+    visual_evidence: dict[str, Any] | None = None
+    asset_key: str | None = None
 
 
 class ToolCallItem(BaseModel):
