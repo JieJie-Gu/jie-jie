@@ -12,6 +12,7 @@ env/
 venv/
 .venv/
 .worktrees/
+.superpowers/
 *.egg-info/
 dist/
 build/
