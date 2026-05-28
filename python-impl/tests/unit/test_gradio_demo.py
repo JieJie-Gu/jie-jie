@@ -190,3 +190,124 @@ def test_send_message_with_image_passes_file_tuple_and_closes_file(
     assert captured["file_closed_during_request"] is False
     assert captured["file_bytes"] == b"image-bytes"
     assert captured["file"].closed is True
+
+
+class FakeClient:
+    def __init__(self) -> None:
+        self.confirmed: list[tuple[str, str, str, bool]] = []
+
+    def create_conversation(self, customer_id: str):
+        return {"id": "conv-1", "customer_id": customer_id}
+
+    def send_message(self, conversation_id: str, customer_id: str, content: str):
+        return {
+            "status": "pending_confirmation",
+            "reply": "宸蹭负鎮ㄧ敓鎴愬敭鍚庣敵璇疯崏绋匡紝璇风‘璁ゅ悗鎻愪氦銆?",
+            "pending_action": {
+                "action_type": "after_sales",
+                "action_id": "A1",
+                "order_id": "O1001",
+                "reason": content,
+                "status": "pending_confirmation",
+            },
+        }
+
+    def send_message_with_image(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        content: str,
+        image_path: str,
+    ):
+        return self.send_message(conversation_id, customer_id, content)
+
+    def confirm_action(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        action_id: str,
+        *,
+        approved: bool,
+    ):
+        self.confirmed.append((conversation_id, customer_id, action_id, approved))
+        return {
+            "status": "completed",
+            "reply": "鍞悗鐢宠宸插彈鐞嗭紝宸ュ崟缂栧彿涓?T1銆?",
+            "result": {"status": "submitted", "ticket_id": "T1"},
+            "pending_action": None,
+        }
+
+    def list_runs(self, conversation_id: str, customer_id: str):
+        return {"runs": [{"conversation_id": conversation_id, "agents": ["OrderAgent"]}], "tool_calls": []}
+
+    def list_tool_calls(self, conversation_id: str, customer_id: str):
+        return {"tool_calls": [{"tool_name": "draft_after_sales", "customer_id": customer_id}]}
+
+
+def test_create_conversation_callback_returns_initial_state() -> None:
+    demo = load_demo_module()
+
+    result = demo.create_conversation_callback(
+        "http://backend",
+        "C001",
+        client_factory=lambda _base_url: FakeClient(),
+    )
+
+    assert result.conversation_id == "conv-1"
+    assert result.pending_action is None
+    assert result.chat_history[-1][1] == "宸插垱寤轰細璇?conv-1銆?"
+
+
+def test_send_callback_creates_conversation_when_missing_and_refreshes_audit() -> None:
+    demo = load_demo_module()
+
+    result = demo.send_message_callback(
+        backend_url="http://backend",
+        customer_id="C001",
+        conversation_id="",
+        message="O1001 闉嬪簳寮€鑳?",
+        image_path=None,
+        chat_history=[],
+        client_factory=lambda _base_url: FakeClient(),
+    )
+
+    assert result.conversation_id == "conv-1"
+    assert result.pending_action["action_id"] == "A1"
+    assert result.chat_history[-1][1] == FakeClient().send_message("conv-1", "C001", "")["reply"]
+    assert "OrderAgent" in result.runs_json
+    assert "draft_after_sales" in result.tool_calls_json
+
+
+def test_confirm_callback_requires_pending_action() -> None:
+    demo = load_demo_module()
+
+    result = demo.confirm_action_callback(
+        backend_url="http://backend",
+        customer_id="C001",
+        conversation_id="conv-1",
+        pending_action=None,
+        approved=True,
+        chat_history=[],
+        client_factory=lambda _base_url: FakeClient(),
+    )
+
+    assert result.raw_json == "娌℃湁寰呯‘璁ゅ姩浣溿€?"
+    assert result.chat_history[-1][1] == "娌℃湁寰呯‘璁ゅ姩浣溿€?"
+
+
+def test_confirm_callback_submits_pending_action_and_clears_panel() -> None:
+    demo = load_demo_module()
+
+    result = demo.confirm_action_callback(
+        backend_url="http://backend",
+        customer_id="C001",
+        conversation_id="conv-1",
+        pending_action={"action_id": "A1"},
+        approved=True,
+        chat_history=[],
+        client_factory=lambda _base_url: FakeClient(),
+    )
+
+    assert result.pending_action is None
+    assert "鍞悗鐢宠宸插彈鐞" in result.chat_history[-1][1]
+    assert "ticket_id" in result.raw_json
