@@ -200,7 +200,7 @@ def create_conversation_callback(
     client = client_factory(backend_url)
     response = client.create_conversation(customer_id)
     conversation_id = str(response["id"])
-    history = [("鍒涘缓浼氳瘽", f"宸插垱寤轰細璇?{conversation_id}銆?")]
+    history = [("创建会话", f"已创建会话 {conversation_id}。")]
     runs, tool_calls = refresh_audit(client, conversation_id, customer_id)
     return UiUpdate(
         conversation_id=conversation_id,
@@ -229,7 +229,7 @@ def send_message_callback(
     if not active_conversation_id:
         created = client.create_conversation(customer_id)
         active_conversation_id = str(created["id"])
-        active_history.append(("鍒涘缓浼氳瘽", f"宸插垱寤轰細璇?{active_conversation_id}銆?"))
+        active_history.append(("创建会话", f"已创建会话 {active_conversation_id}。"))
 
     if image_path:
         response = client.send_message_with_image(
@@ -242,7 +242,8 @@ def send_message_callback(
         response = client.send_message(active_conversation_id, customer_id, message)
 
     pending_action = extract_pending_action(response)
-    runs, tool_calls = refresh_audit(client, active_conversation_id, customer_id)
+    runs, tool_calls, audit_warning = refresh_audit_safely(client, active_conversation_id, customer_id)
+    raw_payload = response if audit_warning is None else {"response": response, "audit_warning": audit_warning}
     return UiUpdate(
         conversation_id=active_conversation_id,
         chat_history=append_chat_entry(
@@ -255,7 +256,7 @@ def send_message_callback(
         pending_markdown=format_pending_action(pending_action),
         runs_json=to_pretty_json(runs),
         tool_calls_json=to_pretty_json(tool_calls),
-        raw_json=to_pretty_json(response),
+        raw_json=to_pretty_json(raw_payload),
     )
 
 
@@ -270,10 +271,10 @@ def confirm_action_callback(
     client_factory: ClientFactory = SmartCsApiClient,
 ) -> UiUpdate:
     if not pending_action or not pending_action.get("action_id"):
-        message = "娌℃湁寰呯‘璁ゅ姩浣溿€?"
+        message = "没有待确认动作。"
         return UiUpdate(
             conversation_id=conversation_id,
-            chat_history=[*chat_history, ("纭鍔ㄤ綔", message)],
+            chat_history=[*chat_history, ("确认动作", message)],
             pending_action=None,
             pending_markdown=format_pending_action(None),
             runs_json="{}",
@@ -292,7 +293,7 @@ def confirm_action_callback(
     runs, tool_calls = refresh_audit(client, conversation_id, customer_id)
     return UiUpdate(
         conversation_id=conversation_id,
-        chat_history=[*chat_history, ("纭鍔ㄤ綔", str(response.get("reply", "宸插畬鎴愮‘璁ゃ€?")))],
+        chat_history=[*chat_history, ("确认动作", str(response.get("reply", "已完成确认。")))],
         pending_action=next_pending,
         pending_markdown=format_pending_action(next_pending),
         runs_json=to_pretty_json(runs),
@@ -309,13 +310,23 @@ def refresh_audit(client: Any, conversation_id: str, customer_id: str) -> tuple[
     return runs, tool_calls
 
 
+def refresh_audit_safely(client: Any, conversation_id: str, customer_id: str) -> tuple[JsonDict, JsonDict, str | None]:
+    try:
+        runs, tool_calls = refresh_audit(client, conversation_id, customer_id)
+    except DemoApiError as error:
+        warning = f"Audit refresh failed: {error}"
+        payload = {"error": warning, "detail": error.payload}
+        return payload, payload, warning
+    return runs, tool_calls, None
+
+
 def build_app():
     import gradio as gr
 
     with gr.Blocks(title="Smart CS Multi-Agent Demo") as app:
         gr.Markdown(
             "# Smart CS Multi-Agent Demo\n"
-            "宸︿晶浣撻獙瀹㈡湇瀵硅瘽锛屽彸渚ф煡鐪?pending action銆丄gentRun銆乀oolCall 鍜屽師濮?JSON銆?"
+            "左侧体验客服对话，右侧查看 pending action、AgentRun、ToolCall 和原始 JSON。"
         )
         conversation_state = gr.State("")
         pending_action_state = gr.State(None)
@@ -327,22 +338,22 @@ def build_app():
                     value=DEFAULT_BACKEND_URL,
                 )
                 customer_id = gr.Textbox(label="Customer ID", value=DEFAULT_CUSTOMER_ID)
-                create_button = gr.Button("鍒涘缓浼氳瘽", variant="primary")
+                create_button = gr.Button("创建会话", variant="primary")
                 conversation_id = gr.Textbox(label="Conversation ID", interactive=False)
-                chatbot = gr.Chatbot(label="瀹㈡湇瀵硅瘽", height=420)
+                chatbot = gr.Chatbot(label="客服对话", height=420)
                 message = gr.Textbox(
-                    label="瀹㈡埛娑堟伅",
-                    placeholder="渚嬪锛氭帹鑽愪竴鍙岃窇闉?/ 鏌ヨ璁㈠崟 O1001 / O1001 闉嬪簳寮€鑳朵簡锛岀敵璇峰敭鍚?",
+                    label="客户消息",
+                    placeholder="例如：推荐一双跑鞋 / 查询订单 O1001 / O1001 鞋底开胶了，申请售后",
                     lines=3,
                 )
-                image = gr.Image(label="鍙€夊浘鐗?", type="filepath")
-                send_button = gr.Button("鍙戦€?", variant="primary")
+                image = gr.Image(label="可选图片", type="filepath")
+                send_button = gr.Button("发送", variant="primary")
 
             with gr.Column(scale=4):
-                pending_markdown = gr.Markdown("褰撳墠娌℃湁寰呯‘璁ゅ姩浣溿€?")
+                pending_markdown = gr.Markdown("当前没有待确认动作。")
                 with gr.Row():
-                    approve_button = gr.Button("纭鎻愪氦", variant="primary")
-                    reject_button = gr.Button("鎷掔粷")
+                    approve_button = gr.Button("确认提交", variant="primary")
+                    reject_button = gr.Button("拒绝")
                 with gr.Tabs():
                     with gr.Tab("AgentRun"):
                         runs_json = gr.Code(label="AgentRun JSON", language="json", lines=16)
@@ -356,7 +367,7 @@ def build_app():
                 result = create_conversation_callback(backend_url_value, customer_id_value)
             except DemoApiError as error:
                 raw = to_pretty_json(error.payload)
-                return "", "", [("鍒涘缓浼氳瘽", str(error))], None, format_pending_action(None), "{}", "{}", raw
+                return "", "", [("创建会话", str(error))], None, format_pending_action(None), "{}", "{}", raw
             return (
                 result.conversation_id,
                 result.conversation_id,
@@ -439,7 +450,7 @@ def build_app():
             except DemoApiError as error:
                 return (
                     conversation_id_value,
-                    history + [("纭鍔ㄤ綔", str(error))],
+                    history + [("确认动作", str(error))],
                     pending_action_value,
                     format_pending_action(pending_action_value),
                     "{}",

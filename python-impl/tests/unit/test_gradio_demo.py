@@ -202,7 +202,7 @@ class FakeClient:
     def send_message(self, conversation_id: str, customer_id: str, content: str):
         return {
             "status": "pending_confirmation",
-            "reply": "宸蹭负鎮ㄧ敓鎴愬敭鍚庣敵璇疯崏绋匡紝璇风‘璁ゅ悗鎻愪氦銆?",
+            "reply": "已为您生成售后申请草稿，请确认后提交。",
             "pending_action": {
                 "action_type": "after_sales",
                 "action_id": "A1",
@@ -232,7 +232,7 @@ class FakeClient:
         self.confirmed.append((conversation_id, customer_id, action_id, approved))
         return {
             "status": "completed",
-            "reply": "鍞悗鐢宠宸插彈鐞嗭紝宸ュ崟缂栧彿涓?T1銆?",
+            "reply": "售后申请已受理，工单编号为 T1。",
             "result": {"status": "submitted", "ticket_id": "T1"},
             "pending_action": None,
         }
@@ -255,7 +255,7 @@ def test_create_conversation_callback_returns_initial_state() -> None:
 
     assert result.conversation_id == "conv-1"
     assert result.pending_action is None
-    assert result.chat_history[-1][1] == "宸插垱寤轰細璇?conv-1銆?"
+    assert result.chat_history[-1][1] == "已创建会话 conv-1。"
 
 
 def test_send_callback_creates_conversation_when_missing_and_refreshes_audit() -> None:
@@ -265,7 +265,7 @@ def test_send_callback_creates_conversation_when_missing_and_refreshes_audit() -
         backend_url="http://backend",
         customer_id="C001",
         conversation_id="",
-        message="O1001 闉嬪簳寮€鑳?",
+        message="O1001 鞋底开胶",
         image_path=None,
         chat_history=[],
         client_factory=lambda _base_url: FakeClient(),
@@ -273,9 +273,41 @@ def test_send_callback_creates_conversation_when_missing_and_refreshes_audit() -
 
     assert result.conversation_id == "conv-1"
     assert result.pending_action["action_id"] == "A1"
-    assert result.chat_history[-1][1] == FakeClient().send_message("conv-1", "C001", "")["reply"]
+    assert result.chat_history[-1][1] == "已为您生成售后申请草稿，请确认后提交。"
     assert "OrderAgent" in result.runs_json
     assert "draft_after_sales" in result.tool_calls_json
+
+
+def test_send_callback_preserves_pending_action_when_audit_refresh_fails() -> None:
+    demo = load_demo_module()
+
+    class AuditFailingClient(FakeClient):
+        def list_runs(self, conversation_id: str, customer_id: str):
+            raise demo.DemoApiError(503, {"detail": "audit unavailable"})
+
+    result = demo.send_message_callback(
+        backend_url="http://backend",
+        customer_id="C001",
+        conversation_id="conv-1",
+        message="O1001 鞋底开胶",
+        image_path=None,
+        chat_history=[],
+        client_factory=lambda _base_url: AuditFailingClient(),
+    )
+
+    assert result.conversation_id == "conv-1"
+    assert result.pending_action == {
+        "action_type": "after_sales",
+        "action_id": "A1",
+        "order_id": "O1001",
+        "reason": "O1001 鞋底开胶",
+        "status": "pending_confirmation",
+    }
+    assert result.chat_history[-1][1] == "已为您生成售后申请草稿，请确认后提交。"
+    assert "audit unavailable" in result.runs_json
+    assert "audit unavailable" in result.tool_calls_json
+    assert "pending_action" in result.raw_json
+    assert "audit unavailable" in result.raw_json
 
 
 def test_confirm_callback_requires_pending_action() -> None:
@@ -291,8 +323,8 @@ def test_confirm_callback_requires_pending_action() -> None:
         client_factory=lambda _base_url: FakeClient(),
     )
 
-    assert result.raw_json == "娌℃湁寰呯‘璁ゅ姩浣溿€?"
-    assert result.chat_history[-1][1] == "娌℃湁寰呯‘璁ゅ姩浣溿€?"
+    assert result.raw_json == "没有待确认动作。"
+    assert result.chat_history[-1][1] == "没有待确认动作。"
 
 
 def test_confirm_callback_submits_pending_action_and_clears_panel() -> None:
@@ -309,5 +341,5 @@ def test_confirm_callback_submits_pending_action_and_clears_panel() -> None:
     )
 
     assert result.pending_action is None
-    assert "鍞悗鐢宠宸插彈鐞" in result.chat_history[-1][1]
+    assert "售后申请已受理" in result.chat_history[-1][1]
     assert "ticket_id" in result.raw_json
