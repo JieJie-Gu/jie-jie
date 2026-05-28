@@ -340,7 +340,7 @@ def build_app():
                 customer_id = gr.Textbox(label="Customer ID", value=DEFAULT_CUSTOMER_ID)
                 create_button = gr.Button("创建会话", variant="primary")
                 conversation_id = gr.Textbox(label="Conversation ID", interactive=False)
-                chatbot = gr.Chatbot(label="客服对话", height=420)
+                chatbot = gr.Chatbot(label="客服对话", height=420, type="tuples")
                 message = gr.Textbox(
                     label="客户消息",
                     placeholder="例如：推荐一双跑鞋 / 查询订单 O1001 / O1001 鞋底开胶了，申请售后",
