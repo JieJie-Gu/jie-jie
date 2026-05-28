@@ -34,6 +34,8 @@ from smart_cs.tools.executor import AuthorizedToolExecutor
 
 @dataclass(frozen=True)
 class RuntimeBundle:
+    """FastAPI 应用启动时创建、关闭时统一清理的一组运行资源。"""
+
     database: Database
     repository: SqlRepository
     runtime: AgentRuntime
@@ -42,33 +44,43 @@ class RuntimeBundle:
 def build_runtime(
     settings: Settings, knowledge_agent: KnowledgeAgent | None = None
 ) -> RuntimeBundle:
+    # 确保 SQLite 数据库文件和 LangGraph checkpoint 文件所在目录已存在。
     _ensure_sqlite_parent(settings.database_url)
     settings.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # 创建数据库访问对象、仓库层，并初始化表结构和演示数据。
     database = Database(settings.database_url)
     repository = SqlRepository(database)
     repository.create_schema()
     repository.seed_demo_data()
 
+    # 本地学习模式使用确定性规则模型；非 rules 模式使用配置好的 LangChain ChatModel。
     if settings.model_mode.lower() == "rules":
         decision_model = RulesDecisionModel()
     else:
         decision_model = LangChainDecisionModel(configured_chat_model(settings))
+
+    # 如果调用方没有注入 KnowledgeAgent，并且启用了 RAG，就连接 Milvus 并创建知识问答 Agent。
     if knowledge_agent is None and settings.rag_enabled:
         from smart_cs.rag.embeddings import LocalSentenceEmbeddings
         from smart_cs.rag.retrieval import RuleBasedQueryRewriter
         from smart_cs.rag.vector_store import connect_hybrid_store
 
+        # 文本 embedding 用于把用户问题和 Markdown 知识块映射到向量空间。
         embeddings = LocalSentenceEmbeddings(settings.embedding_model)
         knowledge_agent = KnowledgeAgent(
             connect_hybrid_store(settings, embeddings), RuleBasedQueryRewriter()
         )
+
+    # 组装多 Agent 运行时：工具执行器负责受控业务操作，decision_model 负责路由和规划。
     runtime = AgentRuntime(
         executor=AuthorizedToolExecutor(repository),
         decision_model=decision_model,
         checkpoint_path=settings.checkpoint_path,
         knowledge_agent=knowledge_agent,
     )
+
+    # 返回统一资源包，供 FastAPI app 生命周期持有并在关闭时清理。
     return RuntimeBundle(database=database, repository=repository, runtime=runtime)
 
 
