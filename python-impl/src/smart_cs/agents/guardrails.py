@@ -14,6 +14,12 @@ class ResponseGuard:
         action_type = result.get("action_type")
         if status == "pending_confirmation" and action_type == "after_sales":
             return "已为您生成售后申请草稿，请确认后提交。"
+        if (
+            status == "pending_confirmation"
+            and action_type == "handoff"
+            and result.get("evidence_status") == "uncertain"
+        ):
+            return "图片证据暂不能确认问题，已为您生成转人工申请草稿，请确认。"
         if status == "pending_confirmation" and action_type == "handoff":
             return "已为您生成转人工申请草稿，请确认后提交。"
         if status == "submitted" and action_type == "after_sales":

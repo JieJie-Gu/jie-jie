@@ -53,6 +53,7 @@ conda run -n agent uvicorn smart_cs.main:app --app-dir src --host 0.0.0.0 --port
 - `POST /api/conversations/{id}/messages`
 - `POST /api/conversations/{id}/messages-with-image`
 - `POST /api/conversations/{id}/actions/confirm`
+- `GET /api/conversations/{id}/runs`
 - `GET /api/conversations/{id}/tool-calls`
 
 ## 文档

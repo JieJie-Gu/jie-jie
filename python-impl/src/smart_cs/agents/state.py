@@ -13,7 +13,14 @@ class RouteAnalysis(BaseModel):
 
 class SupervisorDecision(BaseModel):
     agents: list[
-        Literal["ProductAgent", "OrderAgent", "KnowledgeAgent", "AfterSalesAgent", "HandoffAgent"]
+        Literal[
+            "ProductAgent",
+            "OrderAgent",
+            "KnowledgeAgent",
+            "VisionAgent",
+            "AfterSalesAgent",
+            "HandoffAgent",
+        ]
     ]
     action: Literal["read", "draft_after_sales", "draft_handoff"]
     requires_confirmation: bool = False
@@ -24,6 +31,9 @@ class RuntimeState(TypedDict, total=False):
     customer_id: str
     request_id: str
     message: str
+    has_image: bool
+    visual_evidence: dict[str, Any] | None
+    asset_key: str | None
     route: dict[str, Any]
     decision: dict[str, Any]
     agents_invoked: list[str]

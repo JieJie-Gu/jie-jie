@@ -1,7 +1,7 @@
 from contextlib import AbstractContextManager
 from typing import Any, Protocol
 
-from smart_cs.domain.models import Conversation, Order, PendingAction, Product, Ticket, ToolCall
+from smart_cs.domain.models import AgentRun, Conversation, Message, Order, PendingAction, Product, Ticket, ToolCall
 
 
 class CustomerFactsRepository(Protocol):
@@ -51,6 +51,20 @@ class CustomerFactsRepository(Protocol):
     ) -> None: ...
 
     def customer_exists(self, customer_id: str, *, session: Any | None = None) -> bool: ...
+
+    def record_message(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        role: str,
+        content: str,
+        content_type: str = "text",
+        asset_key: str | None = None,
+        visual_evidence: dict[str, Any] | None = None,
+        session: Any | None = None,
+    ) -> Message: ...
+
+    def latest_message(self, conversation_id: str) -> Message | None: ...
 
     def search_products(self, query: str) -> list[Product]: ...
 
@@ -106,3 +120,27 @@ class CustomerFactsRepository(Protocol):
         duration_ms: int = 0,
         session: Any | None = None,
     ) -> ToolCall: ...
+
+    def record_agent_run(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        agents: list[str],
+        status: str,
+        pending_action_id: str | None = None,
+        reply: str | None = None,
+        session: Any | None = None,
+    ) -> AgentRun: ...
+
+    def update_agent_run_for_action(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        pending_action_id: str,
+        status: str,
+        reply: str | None = None,
+        agents: list[str] | None = None,
+        session: Any | None = None,
+    ) -> AgentRun | None: ...
+
+    def list_agent_runs(self, conversation_id: str, customer_id: str) -> list[AgentRun]: ...

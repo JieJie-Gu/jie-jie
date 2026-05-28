@@ -92,6 +92,7 @@ def main() -> None:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "case_count": len(cases),
         "retrieval_mode": retrieval_mode,
+        "model_mode": settings.model_mode,
         "embedding_model": settings.embedding_model if not args.offline else "not_used",
         "metrics": average_metrics([detail["metrics"] for detail in details]),
         "cases": details,
@@ -106,10 +107,11 @@ def main() -> None:
 
 def render_markdown(report: dict[str, Any]) -> str:
     metrics = report["metrics"]
-    return (
+    markdown = (
         "# RAG Acceptance Results\n\n"
         f"- Generated at: `{report['generated_at']}`\n"
         f"- Retrieval mode: `{report['retrieval_mode']}`\n"
+        f"- Model mode: `{report['model_mode']}`\n"
         f"- Embedding model: `{report['embedding_model']}`\n"
         f"- Case count: `{report['case_count']}`\n\n"
         "| Metric | Score |\n"
@@ -117,10 +119,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| Faithfulness | {metrics['faithfulness']:.4f} |\n"
         f"| Answer relevancy | {metrics['answer_relevancy']:.4f} |\n"
         f"| Context recall | {metrics['context_recall']:.4f} |\n"
-        f"| Context precision | {metrics['context_precision']:.4f} |\n\n"
-        "> `offline_markdown_baseline` verifies the evaluation pipeline only; run without `--offline` "
-        "against Milvus before making hybrid retrieval claims.\n"
+        f"| Context precision | {metrics['context_precision']:.4f} |\n"
     )
+    if report["retrieval_mode"] == "offline_markdown_baseline":
+        markdown += (
+            "\n> `offline_markdown_baseline` verifies the evaluation pipeline only; "
+            "run without `--offline` against Milvus before making hybrid retrieval claims.\n"
+        )
+    return markdown
 
 
 if __name__ == "__main__":

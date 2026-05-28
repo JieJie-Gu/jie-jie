@@ -18,9 +18,11 @@ from smart_cs.domain.errors import (
     ToolPermissionError,
 )
 from smart_cs.domain.models import (
+    AgentRun,
     Base,
     Conversation,
     Customer,
+    Message,
     Order,
     PendingAction,
     Product,
@@ -164,6 +166,48 @@ class SqlRepository:
         with self.transaction() as managed_session:
             return managed_session.get(Customer, customer_id) is not None
 
+    def record_message(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        role: str,
+        content: str,
+        content_type: str = "text",
+        asset_key: str | None = None,
+        visual_evidence: dict[str, Any] | None = None,
+        session: Session | None = None,
+    ) -> Message:
+        if session is not None:
+            return self._record_message(
+                session,
+                conversation_id=conversation_id,
+                customer_id=customer_id,
+                role=role,
+                content=content,
+                content_type=content_type,
+                asset_key=asset_key,
+                visual_evidence=visual_evidence,
+            )
+        with self.transaction() as managed_session:
+            return self._record_message(
+                managed_session,
+                conversation_id=conversation_id,
+                customer_id=customer_id,
+                role=role,
+                content=content,
+                content_type=content_type,
+                asset_key=asset_key,
+                visual_evidence=visual_evidence,
+            )
+
+    def latest_message(self, conversation_id: str) -> Message | None:
+        with self.database.session() as session:
+            return session.scalar(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(Message.created_at.desc(), Message.id.desc())
+            )
+
     def search_products(self, query: str) -> list[Product]:
         raw_text = query.strip()
         text = raw_text
@@ -299,6 +343,107 @@ class SqlRepository:
                 statement = statement.where(ToolCall.customer_id == customer_id)
             return list(session.scalars(statement.order_by(ToolCall.id)))
 
+    def record_agent_run(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        agents: list[str],
+        status: str,
+        pending_action_id: str | None = None,
+        reply: str | None = None,
+        session: Session | None = None,
+    ) -> AgentRun:
+        run = AgentRun(
+            id=str(uuid4()),
+            conversation_id=conversation_id,
+            agents=agents,
+            status=status,
+            pending_action_id=pending_action_id,
+            reply=reply,
+        )
+        if session is not None:
+            self._require_conversation_owner(session, conversation_id, customer_id)
+            session.add(run)
+            session.flush()
+            return run
+        with self.transaction() as managed_session:
+            self._require_conversation_owner(managed_session, conversation_id, customer_id)
+            managed_session.add(run)
+            managed_session.flush()
+        return run
+
+    def list_agent_runs(self, conversation_id: str, customer_id: str) -> list[AgentRun]:
+        with self.transaction() as session:
+            self._require_conversation_owner(session, conversation_id, customer_id)
+            return list(
+                session.scalars(
+                    select(AgentRun)
+                    .where(AgentRun.conversation_id == conversation_id)
+                    .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+                )
+            )
+
+    def update_agent_run_for_action(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        pending_action_id: str,
+        status: str,
+        reply: str | None = None,
+        agents: list[str] | None = None,
+        session: Session | None = None,
+    ) -> AgentRun | None:
+        if session is not None:
+            return self._update_agent_run_for_action(
+                session,
+                conversation_id=conversation_id,
+                customer_id=customer_id,
+                pending_action_id=pending_action_id,
+                status=status,
+                reply=reply,
+                agents=agents,
+            )
+        with self.transaction() as managed_session:
+            return self._update_agent_run_for_action(
+                managed_session,
+                conversation_id=conversation_id,
+                customer_id=customer_id,
+                pending_action_id=pending_action_id,
+                status=status,
+                reply=reply,
+                agents=agents,
+            )
+
+    @classmethod
+    def _update_agent_run_for_action(
+        cls,
+        session: Session,
+        *,
+        conversation_id: str,
+        customer_id: str,
+        pending_action_id: str,
+        status: str,
+        reply: str | None,
+        agents: list[str] | None,
+    ) -> AgentRun | None:
+        cls._require_conversation_owner(session, conversation_id, customer_id)
+        run = session.scalar(
+            select(AgentRun)
+            .where(
+                AgentRun.conversation_id == conversation_id,
+                AgentRun.pending_action_id == pending_action_id,
+            )
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        )
+        if run is None:
+            return None
+        run.status = status
+        run.reply = reply
+        if agents is not None:
+            run.agents = agents
+        session.flush()
+        return run
+
     def record_tool_call(
         self,
         tool_name: str,
@@ -336,6 +481,33 @@ class SqlRepository:
             .on_conflict_do_nothing(index_elements=[Conversation.id])
         )
         return SqlRepository._require_conversation_owner(session, conversation_id, customer_id)
+
+    @classmethod
+    def _record_message(
+        cls,
+        session: Session,
+        *,
+        conversation_id: str,
+        customer_id: str,
+        role: str,
+        content: str,
+        content_type: str,
+        asset_key: str | None,
+        visual_evidence: dict[str, Any] | None,
+    ) -> Message:
+        cls._require_conversation_owner(session, conversation_id, customer_id)
+        message = Message(
+            conversation_id=conversation_id,
+            customer_id=customer_id,
+            role=role,
+            content=content,
+            content_type=content_type,
+            asset_key=asset_key,
+            visual_evidence=visual_evidence,
+        )
+        session.add(message)
+        session.flush()
+        return message
 
     @staticmethod
     def _require_conversation_owner(

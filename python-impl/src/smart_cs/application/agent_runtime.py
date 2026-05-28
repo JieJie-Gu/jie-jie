@@ -19,6 +19,7 @@ from smart_cs.agents.router import RouterAgent, RoutingDecisionModel
 from smart_cs.agents.specialists import SpecialistDispatcher
 from smart_cs.agents.state import RouteAnalysis, RuntimeState, SupervisorDecision
 from smart_cs.agents.supervisor import PlanningDecisionModel, SupervisorAgent
+from smart_cs.domain.evidence import VisualEvidence
 from smart_cs.domain.enums import ActionStatus
 from smart_cs.domain.errors import ConversationLeaseLostError
 from smart_cs.infrastructure.model_factory import RulesDecisionModel
@@ -157,7 +158,15 @@ class AgentRuntime:
         self._checkpointer = SqliteSaver(self._checkpoint_connection)
         self.graph = self._build_graph()
 
-    def invoke(self, conversation_id: str, customer_id: str, message: str) -> dict[str, Any]:
+    def invoke(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        message: str,
+        *,
+        visual_evidence: dict[str, Any] | None = None,
+        asset_key: str | None = None,
+    ) -> dict[str, Any]:
         self.executor.claim_conversation(conversation_id, customer_id)
         with self._turn_lease(conversation_id, customer_id):
             pending_action = self.executor.pending_action_for_conversation(
@@ -176,6 +185,9 @@ class AgentRuntime:
                     "customer_id": customer_id,
                     "request_id": f"{conversation_id}:{uuid4()}",
                     "message": message,
+                    "has_image": visual_evidence is not None,
+                    "visual_evidence": visual_evidence,
+                    "asset_key": asset_key,
                     "route": {},
                     "decision": {},
                     "agents_invoked": [],
@@ -298,13 +310,15 @@ class AgentRuntime:
         workflow.add_node("router", self._router_node)
         workflow.add_node("supervisor", self._supervisor_node)
         workflow.add_node("specialists", self._specialists_node)
+        workflow.add_node("validate_evidence", self._validate_evidence_node)
         workflow.add_node("confirm_action", self._confirm_action_node)
         workflow.add_node("guard", self._guard_node)
         workflow.add_node("synthesize", self._synthesize_node)
         workflow.add_edge(START, "router")
         workflow.add_edge("router", "supervisor")
         workflow.add_edge("supervisor", "specialists")
-        workflow.add_edge("specialists", "guard")
+        workflow.add_edge("specialists", "validate_evidence")
+        workflow.add_edge("validate_evidence", "guard")
         workflow.add_edge("confirm_action", "guard")
         workflow.add_edge("guard", "synthesize")
         workflow.add_conditional_edges(
@@ -323,7 +337,9 @@ class AgentRuntime:
     def _supervisor_node(self, state: RuntimeState) -> dict[str, Any]:
         self._assert_turn_lease()
         route = RouteAnalysis.model_validate(state["route"])
-        decision = self.supervisor.plan(state["message"], route)
+        decision = self.supervisor.plan(
+            state["message"], route, has_image=bool(state.get("has_image"))
+        )
         self._assert_turn_lease()
         return {"decision": decision.model_dump()}
 
@@ -337,6 +353,8 @@ class AgentRuntime:
             conversation_id=state["conversation_id"],
             idempotency_key=state.get("request_id"),
             turn_fence=self._current_turn_fence(),
+            visual_evidence=state.get("visual_evidence"),
+            asset_key=state.get("asset_key"),
         )
         self._assert_turn_lease()
         return {
@@ -344,6 +362,73 @@ class AgentRuntime:
             "specialist_results": execution.results,
             "business_result": execution.result,
             "pending_confirmation": execution.pending_confirmation,
+        }
+
+    def _validate_evidence_node(self, state: RuntimeState) -> dict[str, Any]:
+        self._assert_turn_lease()
+        result = state.get("business_result") or {}
+        if (
+            not state.get("has_image")
+            or result.get("status") != ActionStatus.PENDING_CONFIRMATION.value
+            or result.get("action_type") != "after_sales"
+        ):
+            return {}
+
+        evidence_payload = state.get("visual_evidence") or {}
+        evidence = VisualEvidence.model_validate(evidence_payload)
+        if evidence.usable_for_draft:
+            return {}
+
+        self._assert_turn_lease()
+        with self.executor.repository.transaction() as session:
+            self.executor.repository.require_active_turn_lease(
+                state["conversation_id"],
+                state["customer_id"],
+                self._current_turn_fence().lease_token,
+                session=session,
+            )
+            self.executor.repository.cancel_pending_action(
+                result["action_id"],
+                state["customer_id"],
+                session=session,
+            )
+            action = self.executor.repository.create_pending_action(
+                customer_id=state["customer_id"],
+                conversation_id=state["conversation_id"],
+                idempotency_key=f"{state['request_id']}:handoff",
+                action_type="handoff",
+                reason=f"图片证据暂不能确认问题。用户描述：{state['message']}",
+                session=session,
+            )
+            handoff = self.executor._action_result(action)
+            self.executor.repository.record_tool_call(
+                tool_name="convert_after_sales_to_handoff",
+                arguments={
+                    "conversation_id": state["conversation_id"],
+                    "customer_id": state["customer_id"],
+                    "action_id": result["action_id"],
+                    "reason": handoff["reason"],
+                },
+                customer_id=state["customer_id"],
+                status="succeeded",
+                result=handoff,
+                session=session,
+            )
+        handoff["evidence_status"] = "uncertain"
+        results = list(state.get("specialist_results", []))
+        if results:
+            results[-1] = handoff
+        else:
+            results = [handoff]
+        agents_invoked = list(state.get("agents_invoked", []))
+        if "HandoffAgent" not in agents_invoked:
+            agents_invoked.append("HandoffAgent")
+        self._assert_turn_lease()
+        return {
+            "agents_invoked": agents_invoked,
+            "specialist_results": results,
+            "business_result": handoff,
+            "pending_confirmation": handoff,
         }
 
     @staticmethod
@@ -366,6 +451,7 @@ class AgentRuntime:
                 "status": "pending_confirmation",
                 "pending_confirmation": action,
                 "reply": state.get("reply") or self.guard.render(action),
+                "agents_invoked": list(state.get("agents_invoked", [])),
             }
         )
         self._assert_turn_lease()
@@ -426,6 +512,7 @@ class AgentRuntime:
             "status": ActionStatus.PENDING_CONFIRMATION.value,
             "pending_confirmation": action,
             "reply": reply,
+            "agents_invoked": list((state or {}).get("agents_invoked", [])),
         }
 
     def _completed_result(

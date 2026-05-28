@@ -6,7 +6,14 @@ from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
 
 
 DECLARED_SPECIALISTS = frozenset(
-    {"ProductAgent", "OrderAgent", "KnowledgeAgent", "AfterSalesAgent", "HandoffAgent"}
+    {
+        "ProductAgent",
+        "OrderAgent",
+        "KnowledgeAgent",
+        "VisionAgent",
+        "AfterSalesAgent",
+        "HandoffAgent",
+    }
 )
 WRITE_ACTIONS = frozenset({"draft_after_sales", "draft_handoff"})
 WRITE_AGENT_ACTIONS = {
@@ -20,7 +27,15 @@ class PlanningDecisionModel(Protocol):
     def plan(self, message: str, route: RouteAnalysis) -> SupervisorDecision: ...
 
 
-def validate_decision(decision: SupervisorDecision) -> SupervisorDecision:
+IMAGE_AFTER_SALES_AGENTS = [
+    "VisionAgent",
+    "OrderAgent",
+    "KnowledgeAgent",
+    "AfterSalesAgent",
+]
+
+
+def validate_decision(decision: SupervisorDecision, *, has_image: bool = False) -> SupervisorDecision:
     if not decision.agents:
         raise ValueError("Supervisor agent plan must contain at least one agent")
 
@@ -28,6 +43,14 @@ def validate_decision(decision: SupervisorDecision) -> SupervisorDecision:
     if undeclared_agents:
         names = ", ".join(sorted(undeclared_agents))
         raise ValueError(f"Supervisor agent plan contains undeclared agent(s): {names}")
+
+    if has_image and decision.action == "draft_after_sales":
+        decision = decision.model_copy(
+            update={
+                "agents": IMAGE_AFTER_SALES_AGENTS,
+                "requires_confirmation": True,
+            }
+        )
 
     for position, agent in enumerate(decision.agents):
         required_action = WRITE_AGENT_ACTIONS.get(agent)
@@ -42,11 +65,11 @@ def validate_decision(decision: SupervisorDecision) -> SupervisorDecision:
     if required_agent is not None and decision.agents[-1] != required_agent:
         raise ValueError(f"Action {decision.action} requires {required_agent} as final agent")
 
-    if decision.action == "draft_after_sales" and decision.agents[-2:] != [
-        "OrderAgent",
-        "AfterSalesAgent",
-    ]:
-        raise ValueError("Action draft_after_sales requires OrderAgent before AfterSalesAgent")
+    if decision.action == "draft_after_sales":
+        if "OrderAgent" not in decision.agents:
+            raise ValueError("Action draft_after_sales requires OrderAgent")
+        if decision.agents.index("OrderAgent") > decision.agents.index("AfterSalesAgent"):
+            raise ValueError("Action draft_after_sales requires OrderAgent before AfterSalesAgent")
 
     if decision.action in WRITE_ACTIONS and not decision.requires_confirmation:
         return decision.model_copy(update={"requires_confirmation": True})
@@ -59,8 +82,10 @@ class SupervisorAgent:
     def __init__(self, decision_model: PlanningDecisionModel) -> None:
         self.decision_model = decision_model
 
-    def plan(self, message: str, route: RouteAnalysis) -> SupervisorDecision:
-        return validate_decision(self.decision_model.plan(message, route))
+    def plan(
+        self, message: str, route: RouteAnalysis, *, has_image: bool = False
+    ) -> SupervisorDecision:
+        return validate_decision(self.decision_model.plan(message, route), has_image=has_image)
 
     def synthesize(
         self, specialist_results: list[dict[str, Any]], guarded_contents: list[str]

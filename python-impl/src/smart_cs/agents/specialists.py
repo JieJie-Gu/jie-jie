@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
 from smart_cs.agents.knowledge import KnowledgeAgent
+from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
 from smart_cs.tools.executor import AuthorizedToolExecutor, TurnFence
 
 
@@ -24,16 +24,11 @@ class SpecialistDispatcher:
     ) -> None:
         self.executor = executor
         self.knowledge_agent = knowledge_agent
-        self._registry: dict[
-            str,
-            Callable[
-                [str, str, RouteAnalysis, str | None, str | None, TurnFence | None],
-                dict[str, Any],
-            ],
-        ] = {
+        self._registry: dict[str, Callable[..., dict[str, Any]]] = {
             "ProductAgent": self._product,
             "OrderAgent": self._order,
             "KnowledgeAgent": self._knowledge,
+            "VisionAgent": self._vision,
             "AfterSalesAgent": self._after_sales,
             "HandoffAgent": self._handoff,
         }
@@ -48,12 +43,21 @@ class SpecialistDispatcher:
         conversation_id: str | None = None,
         idempotency_key: str | None = None,
         turn_fence: TurnFence | None = None,
+        visual_evidence: dict[str, Any] | None = None,
+        asset_key: str | None = None,
     ) -> SpecialistExecution:
         results: list[dict[str, Any]] = []
         for agent_name in decision.agents:
             results.append(
                 self._registry[agent_name](
-                    message, customer_id, route, conversation_id, idempotency_key, turn_fence
+                    message,
+                    customer_id,
+                    route,
+                    conversation_id,
+                    idempotency_key,
+                    turn_fence,
+                    visual_evidence,
+                    asset_key,
                 )
             )
 
@@ -82,27 +86,35 @@ class SpecialistDispatcher:
         message: str,
         _customer_id: str,
         _route: RouteAnalysis,
-        _conversation_id: str | None,
+        conversation_id: str | None,
         _idempotency_key: str | None,
         _turn_fence: TurnFence | None,
+        _visual_evidence: dict[str, Any] | None,
+        _asset_key: str | None,
     ) -> dict[str, Any]:
-        return self.executor.invoke("search_products", {"query": message})
+        arguments = {"query": message}
+        if conversation_id is not None:
+            arguments["conversation_id"] = conversation_id
+        return self.executor.invoke("search_products", arguments)
 
     def _order(
         self,
         _message: str,
         customer_id: str,
         route: RouteAnalysis,
-        _conversation_id: str | None,
+        conversation_id: str | None,
         _idempotency_key: str | None,
         _turn_fence: TurnFence | None,
+        _visual_evidence: dict[str, Any] | None,
+        _asset_key: str | None,
     ) -> dict[str, Any]:
         order_id = route.entities.get("order_id")
         if order_id is None:
             return {"status": "information_required", "message": "请提供需要查询的订单编号。"}
-        return self.executor.invoke(
-            "lookup_order", {"customer_id": customer_id, "order_id": order_id}
-        )
+        arguments = {"customer_id": customer_id, "order_id": order_id}
+        if conversation_id is not None:
+            arguments["conversation_id"] = conversation_id
+        return self.executor.invoke("lookup_order", arguments)
 
     def _knowledge(
         self,
@@ -112,10 +124,29 @@ class SpecialistDispatcher:
         _conversation_id: str | None,
         _idempotency_key: str | None,
         _turn_fence: TurnFence | None,
+        _visual_evidence: dict[str, Any] | None,
+        _asset_key: str | None,
     ) -> dict[str, Any]:
         if self.knowledge_agent is not None:
             return self.knowledge_agent.answer(message).as_result()
-        return {"status": "unavailable", "message": "知识库将在 RAG 阶段启用。"}
+        return {"status": "unavailable", "message": "知识库暂未配置，无法提供政策引用。"}
+
+    def _vision(
+        self,
+        _message: str,
+        _customer_id: str,
+        _route: RouteAnalysis,
+        _conversation_id: str | None,
+        _idempotency_key: str | None,
+        _turn_fence: TurnFence | None,
+        visual_evidence: dict[str, Any] | None,
+        asset_key: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "status": "visual_evidence",
+            "visual_evidence": visual_evidence or {},
+            "asset_key": asset_key,
+        }
 
     def _after_sales(
         self,
@@ -125,6 +156,8 @@ class SpecialistDispatcher:
         conversation_id: str | None,
         idempotency_key: str | None,
         turn_fence: TurnFence | None,
+        _visual_evidence: dict[str, Any] | None,
+        _asset_key: str | None,
     ) -> dict[str, Any]:
         order_id = route.entities.get("order_id")
         if order_id is None:
@@ -149,6 +182,8 @@ class SpecialistDispatcher:
         conversation_id: str | None,
         idempotency_key: str | None,
         turn_fence: TurnFence | None,
+        _visual_evidence: dict[str, Any] | None,
+        _asset_key: str | None,
     ) -> dict[str, Any]:
         arguments: dict[str, Any] = {"customer_id": customer_id, "reason": message}
         self._add_request_identity(arguments, conversation_id, idempotency_key)

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 
 from smart_cs.api.dependencies import get_service
 from smart_cs.api.schemas import (
+    AgentRunsResponse,
     ConfirmRequest,
     ConversationCreateRequest,
     ConversationResponse,
@@ -71,3 +72,12 @@ def list_tool_calls(
     service: ConversationService = Depends(get_service),
 ) -> dict:
     return {"tool_calls": service.list_tool_calls(conversation_id, customer_id)}
+
+
+@router.get("/{conversation_id}/runs", response_model=AgentRunsResponse)
+def list_agent_runs(
+    conversation_id: str,
+    customer_id: str = Query(min_length=1),
+    service: ConversationService = Depends(get_service),
+) -> dict:
+    return service.list_agent_runs(conversation_id, customer_id)

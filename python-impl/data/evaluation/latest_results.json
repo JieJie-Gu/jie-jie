@@ -1,13 +1,14 @@
 {
-  "generated_at": "2026-05-27T07:59:21.883531+00:00",
+  "generated_at": "2026-05-27T14:32:20.963811+00:00",
   "case_count": 8,
-  "retrieval_mode": "offline_markdown_baseline",
-  "embedding_model": "not_used",
+  "retrieval_mode": "milvus_hybrid",
+  "model_mode": "rules",
+  "embedding_model": "BAAI/bge-small-zh-v1.5",
   "metrics": {
     "faithfulness": 1.0,
     "answer_relevancy": 1.0,
     "context_recall": 1.0,
-    "context_precision": 0.2708
+    "context_precision": 0.5833
   },
   "cases": [
     {
@@ -17,7 +18,7 @@
         "faithfulness": 1.0,
         "answer_relevancy": 1.0,
         "context_recall": 1.0,
-        "context_precision": 0.25
+        "context_precision": 1.0
       }
     },
     {
@@ -27,7 +28,7 @@
         "faithfulness": 1.0,
         "answer_relevancy": 1.0,
         "context_recall": 1.0,
-        "context_precision": 0.25
+        "context_precision": 0.3333333333333333
       }
     },
     {
@@ -37,7 +38,7 @@
         "faithfulness": 1.0,
         "answer_relevancy": 1.0,
         "context_recall": 1.0,
-        "context_precision": 0.25
+        "context_precision": 0.5
       }
     },
     {
@@ -47,7 +48,7 @@
         "faithfulness": 1.0,
         "answer_relevancy": 1.0,
         "context_recall": 1.0,
-        "context_precision": 0.25
+        "context_precision": 0.5
       }
     },
     {
@@ -57,7 +58,7 @@
         "faithfulness": 1.0,
         "answer_relevancy": 1.0,
         "context_recall": 1.0,
-        "context_precision": 0.25
+        "context_precision": 0.5
       }
     },
     {
@@ -67,7 +68,7 @@
         "faithfulness": 1.0,
         "answer_relevancy": 1.0,
         "context_recall": 1.0,
-        "context_precision": 0.25
+        "context_precision": 0.5
       }
     },
     {
@@ -77,7 +78,7 @@
         "faithfulness": 1.0,
         "answer_relevancy": 1.0,
         "context_recall": 1.0,
-        "context_precision": 0.3333333333333333
+        "context_precision": 1.0
       }
     },
     {

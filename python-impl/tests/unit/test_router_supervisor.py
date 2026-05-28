@@ -22,6 +22,21 @@ def test_write_decision_always_requires_confirmation() -> None:
     assert decision.requires_confirmation is True
 
 
+def test_image_after_sales_decision_requires_vision_policy_and_confirmation() -> None:
+    decision = validate_decision(
+        SupervisorDecision(agents=["OrderAgent", "AfterSalesAgent"], action="draft_after_sales"),
+        has_image=True,
+    )
+
+    assert decision.agents == [
+        "VisionAgent",
+        "OrderAgent",
+        "KnowledgeAgent",
+        "AfterSalesAgent",
+    ]
+    assert decision.requires_confirmation is True
+
+
 @pytest.mark.parametrize(
     "decision",
     [

@@ -50,3 +50,18 @@ class ToolCallItem(BaseModel):
 
 class ToolCallsResponse(BaseModel):
     tool_calls: list[ToolCallItem]
+
+
+class AgentRunItem(BaseModel):
+    id: str
+    conversation_id: str
+    agents: list[str]
+    status: str
+    pending_action_id: str | None
+    reply: str | None
+    created_at: datetime
+
+
+class AgentRunsResponse(BaseModel):
+    runs: list[AgentRunItem]
+    tool_calls: list[ToolCallItem]

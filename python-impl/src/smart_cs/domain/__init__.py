@@ -7,6 +7,7 @@ from smart_cs.domain.errors import (
     ToolPermissionError,
 )
 from smart_cs.domain.models import (
+    AgentRun,
     Conversation,
     Customer,
     Message,
@@ -18,6 +19,7 @@ from smart_cs.domain.models import (
 )
 
 __all__ = [
+    "AgentRun",
     "Conversation",
     "ConversationBusyError",
     "ConversationLeaseLostError",

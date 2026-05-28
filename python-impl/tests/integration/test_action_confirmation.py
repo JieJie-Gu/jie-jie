@@ -65,6 +65,13 @@ class FailingRulesDecisionModel(RulesDecisionModel):
         raise RuntimeError("injected graph failure")
 
 
+class BrokenHandoffRepository(SqlRepository):
+    def create_pending_action(self, *args, **kwargs):
+        if kwargs.get("action_type") == "handoff":
+            raise RuntimeError("injected handoff failure")
+        return super().create_pending_action(*args, **kwargs)
+
+
 class StealLeaseAtWriteExecutor(AuthorizedToolExecutor):
     def __init__(self, repository, *, conversation_id: str, operation: str) -> None:
         super().__init__(repository)
@@ -628,6 +635,40 @@ def test_turn_that_loses_lease_token_aborts_without_returning_success(tmp_path) 
         proceed.set()
         runtime.close()
     assert active_heartbeat_threads() == []
+
+
+def test_low_confidence_image_conversion_failure_preserves_after_sales_action(tmp_path) -> None:
+    repository = BrokenHandoffRepository(Database(f"sqlite:///{tmp_path / 'image-conversion.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    runtime = AgentRuntime(
+        executor=AuthorizedToolExecutor(repository),
+        decision_model=RulesDecisionModel(),
+        checkpoint_path=tmp_path / "image-conversion-checkpoints.db",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="handoff failure"):
+            runtime.invoke(
+                "conv-image-conversion",
+                "C001",
+                "订单 O1001 鞋底开胶，申请售后",
+                visual_evidence={
+                    "visible_issue": "uncertain",
+                    "affected_part": "unknown",
+                    "summary": "image evidence is uncertain",
+                    "confidence": 0.3,
+                    "needs_clarification": True,
+                },
+                asset_key="conv-image-conversion/damage.jpg",
+            )
+
+        pending = [
+            action for action in actions(repository) if action.status == "pending_confirmation"
+        ]
+        assert len(pending) == 1
+        assert pending[0].action_type == "after_sales"
+    finally:
+        runtime.close()
 
 
 def test_close_waits_for_active_turn_and_returns_without_heartbeat_threads(tmp_path) -> None:
