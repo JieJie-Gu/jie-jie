@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 def load_demo_module():
     script_path = Path(__file__).parents[2] / "scripts" / "gradio_demo.py"
@@ -74,3 +76,117 @@ def test_format_error_message_prefers_backend_detail() -> None:
         "HTTP 403: Conversation is not available"
     )
     assert demo.format_error_message(500, {"error": "boom"}) == "HTTP 500: {'error': 'boom'}"
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, payload, text: str = "") -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+def test_client_maps_request_exception_to_demo_api_error(monkeypatch) -> None:
+    demo = load_demo_module()
+
+    def fake_request(*_args, **_kwargs):
+        raise demo.requests.RequestException("connection refused")
+
+    monkeypatch.setattr(demo.requests, "request", fake_request)
+
+    with pytest.raises(demo.DemoApiError) as error_info:
+        demo.SmartCsApiClient("http://backend").health()
+
+    assert error_info.value.status_code == 0
+    assert error_info.value.payload == {"detail": "无法连接后端：connection refused"}
+    assert str(error_info.value) == "无法连接后端：connection refused"
+
+
+def test_client_raises_demo_api_error_for_json_error_payload(monkeypatch) -> None:
+    demo = load_demo_module()
+
+    def fake_request(*_args, **_kwargs):
+        return FakeResponse(403, {"detail": "Conversation is not available"})
+
+    monkeypatch.setattr(demo.requests, "request", fake_request)
+
+    with pytest.raises(demo.DemoApiError) as error_info:
+        demo.SmartCsApiClient("http://backend").health()
+
+    assert error_info.value.status_code == 403
+    assert error_info.value.payload == {"detail": "Conversation is not available"}
+    assert str(error_info.value) == "HTTP 403: Conversation is not available"
+
+
+def test_client_uses_text_detail_for_non_json_error_body(monkeypatch) -> None:
+    demo = load_demo_module()
+
+    def fake_request(*_args, **_kwargs):
+        return FakeResponse(503, ValueError("not json"), text="backend unavailable")
+
+    monkeypatch.setattr(demo.requests, "request", fake_request)
+
+    with pytest.raises(demo.DemoApiError) as error_info:
+        demo.SmartCsApiClient("http://backend").health()
+
+    assert error_info.value.status_code == 503
+    assert error_info.value.payload == {"detail": "backend unavailable"}
+    assert str(error_info.value) == "HTTP 503: backend unavailable"
+
+
+def test_client_wraps_non_dict_success_payload(monkeypatch) -> None:
+    demo = load_demo_module()
+
+    def fake_request(*_args, **_kwargs):
+        return FakeResponse(200, ["ok"])
+
+    monkeypatch.setattr(demo.requests, "request", fake_request)
+
+    assert demo.SmartCsApiClient("http://backend").health() == {"value": ["ok"]}
+
+
+def test_send_message_with_image_passes_file_tuple_and_closes_file(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    demo = load_demo_module()
+    image_path = tmp_path / "damage.jpg"
+    image_path.write_bytes(b"image-bytes")
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        filename, image_file, content_type = kwargs["files"]["image"]
+        captured["method"] = method
+        captured["url"] = url
+        captured["data"] = kwargs["data"]
+        captured["timeout"] = kwargs["timeout"]
+        captured["filename"] = filename
+        captured["content_type"] = content_type
+        captured["file"] = image_file
+        captured["file_closed_during_request"] = image_file.closed
+        captured["file_bytes"] = image_file.read()
+        return FakeResponse(200, {"reply": "ok"})
+
+    monkeypatch.setattr(demo.requests, "request", fake_request)
+
+    response = demo.SmartCsApiClient("http://backend").send_message_with_image(
+        "conv-1",
+        "C001",
+        "O1001 鞋底开胶",
+        str(image_path),
+    )
+
+    assert response == {"reply": "ok"}
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://backend/api/conversations/conv-1/messages-with-image"
+    assert captured["data"] == {"customer_id": "C001", "content": "O1001 鞋底开胶"}
+    assert captured["timeout"] == 30
+    assert captured["filename"] == "damage.jpg"
+    assert captured["content_type"] == "image/jpeg"
+    assert captured["file_closed_during_request"] is False
+    assert captured["file_bytes"] == b"image-bytes"
+    assert captured["file"].closed is True
