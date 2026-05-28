@@ -56,6 +56,40 @@ conda run -n agent uvicorn smart_cs.main:app --app-dir src --host 0.0.0.0 --port
 - `GET /api/conversations/{id}/runs`
 - `GET /api/conversations/{id}/tool-calls`
 
+## Gradio 演示前端
+
+Gradio 是面向面试展示的演示层，通过 FastAPI HTTP APIs 调用后端能力。
+
+后端启动：
+
+```powershell
+cd d:\LLM\smart-cs-multi-agent\python-impl
+conda activate customer_service
+pip install -e ".[demo,test]"
+python scripts/seed_demo_data.py
+uvicorn smart_cs.main:app --app-dir src --host 0.0.0.0 --port 8000
+```
+
+第二个 PowerShell 窗口启动 Gradio：
+
+```powershell
+cd d:\LLM\smart-cs-multi-agent\python-impl
+conda activate customer_service
+python scripts/gradio_demo.py
+```
+
+Gradio 通常会打开在 <http://127.0.0.1:7860>。
+
+推荐演示顺序：
+
+1. 创建会话。
+2. 商品查询。
+3. 订单查询。
+4. 售后待确认动作。
+5. 确认提交。
+6. 查看 AgentRun、ToolCall、Raw JSON。
+7. 上传图片。
+
 ## 文档
 
 - [架构说明](./docs/architecture.md)
