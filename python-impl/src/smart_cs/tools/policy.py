@@ -39,10 +39,31 @@ class ToolRegistry:
 def default_tool_registry() -> ToolRegistry:
     return ToolRegistry(
         [
-            ToolPolicy("search_products", "low", frozenset({"ProductAgent"}), False, True),
-            ToolPolicy("lookup_order", "medium", frozenset({"OrderAgent"}), False, True),
-            ToolPolicy("draft_after_sales", "medium", frozenset({"AfterSalesAgent"}), True, True),
-            ToolPolicy("draft_handoff", "medium", frozenset({"HandoffAgent"}), True, True),
+            ToolPolicy(
+                "search_products",
+                "low",
+                frozenset({"PreSalesAgent", "PostSalesAgent"}),
+                False,
+                True,
+            ),
+            ToolPolicy("lookup_order", "medium", frozenset({"PostSalesAgent"}), False, True),
+            ToolPolicy(
+                "knowledge_rag",
+                "low",
+                frozenset({"PreSalesAgent", "PostSalesAgent"}),
+                False,
+                True,
+            ),
+            ToolPolicy(
+                "request_after_sales",
+                "high",
+                frozenset({"PostSalesAgent"}),
+                True,
+                True,
+            ),
+            ToolPolicy("request_handoff", "medium", frozenset({"PostSalesAgent"}), True, True),
+            ToolPolicy("draft_after_sales", "high", frozenset({"PostSalesAgent"}), True, True),
+            ToolPolicy("draft_handoff", "medium", frozenset({"PostSalesAgent"}), True, True),
             ToolPolicy("submit_confirmed_action", "high", frozenset({"ConfirmActionNode"}), True, True),
             ToolPolicy("cancel_pending_action", "medium", frozenset({"ConfirmActionNode"}), False, True),
         ]

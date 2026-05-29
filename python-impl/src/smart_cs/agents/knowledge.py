@@ -61,7 +61,7 @@ class KnowledgeAgent:
         (("人工",), ("人工", "用户明确要求")),
         (("确认", "提交"), ("确认", "提交")),
     )
-    # 订单号通常代表实时订单查询，应交给 OrderAgent，而不是静态知识库。
+    # 订单号通常代表实时订单查询，应交给 post_sales_agent 的订单工具，而不是静态知识库。
     REALTIME_ORDER_PATTERN = re.compile(r"\bO\d+\b", re.IGNORECASE)
 
     def __init__(self, store: KnowledgeStore, rewriter: QueryRewriter | None = None) -> None:

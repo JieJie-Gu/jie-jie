@@ -1,14 +1,6 @@
-"""Customer service agents and their deterministic orchestration contracts."""
+"""Customer service LangChain agents."""
 
-from smart_cs.agents.router import RouterAgent
-from smart_cs.agents.state import RouteAnalysis, RuntimeState, SupervisorDecision
-from smart_cs.agents.supervisor import SupervisorAgent, validate_decision
+from smart_cs.agents.state import RuntimeState
+from smart_cs.agents.subagents import create_post_sales_agent, create_pre_sales_agent
 
-__all__ = [
-    "RouteAnalysis",
-    "RouterAgent",
-    "RuntimeState",
-    "SupervisorAgent",
-    "SupervisorDecision",
-    "validate_decision",
-]
+__all__ = ["RuntimeState", "create_post_sales_agent", "create_pre_sales_agent"]

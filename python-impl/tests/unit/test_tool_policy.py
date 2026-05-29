@@ -10,7 +10,7 @@ from smart_cs.tools.policy import default_tool_registry
 def test_tool_registry_policy_is_permission_metadata_only() -> None:
     policy = default_tool_registry().get("draft_after_sales")
 
-    assert policy.allowed_agents == frozenset({"AfterSalesAgent"})
+    assert policy.allowed_agents == frozenset({"PostSalesAgent"})
     assert policy.requires_confirmation is True
     assert not hasattr(policy, "args_schema")
 
@@ -25,5 +25,12 @@ def test_executor_rejects_wrong_caller_agent(tmp_path) -> None:
         executor.invoke(
             "draft_after_sales",
             {"customer_id": "C001", "order_id": "O1001", "reason": "鞋底开胶"},
-            caller_agent="OrderAgent",
+            caller_agent="PreSalesAgent",
         )
+
+
+def test_presales_agent_cannot_lookup_order_or_request_after_sales() -> None:
+    registry = default_tool_registry()
+
+    assert "PreSalesAgent" not in registry.get("lookup_order").allowed_agents
+    assert "PreSalesAgent" not in registry.get("request_after_sales").allowed_agents

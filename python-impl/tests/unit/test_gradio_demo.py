@@ -238,7 +238,10 @@ class FakeClient:
         }
 
     def list_runs(self, conversation_id: str, customer_id: str):
-        return {"runs": [{"conversation_id": conversation_id, "agents": ["OrderAgent"]}], "tool_calls": []}
+        return {
+            "runs": [{"conversation_id": conversation_id, "agents": ["post_sales_agent"]}],
+            "tool_calls": [],
+        }
 
     def list_tool_calls(self, conversation_id: str, customer_id: str):
         return {"tool_calls": [{"tool_name": "draft_after_sales", "customer_id": customer_id}]}
@@ -274,7 +277,7 @@ def test_send_callback_creates_conversation_when_missing_and_refreshes_audit() -
     assert result.conversation_id == "conv-1"
     assert result.pending_action["action_id"] == "A1"
     assert result.chat_history[-1][1] == "已为您生成售后申请草稿，请确认后提交。"
-    assert "OrderAgent" in result.runs_json
+    assert "post_sales_agent" in result.runs_json
     assert "draft_after_sales" in result.tool_calls_json
 
 

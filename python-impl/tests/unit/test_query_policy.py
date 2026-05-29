@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from langchain_core.documents import Document
 
-from smart_cs.agents.guardrails import ResponseGuard
 from smart_cs.agents.knowledge import KnowledgeAgent
-from smart_cs.infrastructure.model_factory import RulesDecisionModel
 from smart_cs.rag.retrieval import QueryPolicy, RuleBasedQueryRewriter
 
 
@@ -72,12 +70,6 @@ def test_query_category_filter_is_not_user_supplied_expression() -> None:
     assert expression == 'category == "after_sales"'
 
 
-def test_policy_question_routes_to_knowledge_instead_of_write_action() -> None:
-    route = RulesDecisionModel().route("签收后退货期限是什么？")
-
-    assert route.intent == "knowledge"
-
-
 def test_knowledge_answer_exposes_window_citation() -> None:
     store = FakeStore()
     answer = KnowledgeAgent(store, RuleBasedQueryRewriter()).answer("退货期限")
@@ -92,7 +84,7 @@ def test_knowledge_answer_clarifies_when_evidence_is_not_relevant() -> None:
 
     assert answer.contexts == []
     assert answer.citations == []
-    assert "知识库" in ResponseGuard().render(answer.as_result())
+    assert "知识库" in answer.as_result()["answer"]
 
 
 def test_knowledge_answer_clarifies_when_same_category_evidence_lacks_requested_fact() -> None:
@@ -100,7 +92,7 @@ def test_knowledge_answer_clarifies_when_same_category_evidence_lacks_requested_
 
     assert answer.contexts == []
     assert answer.citations == []
-    assert "知识库" in ResponseGuard().render(answer.as_result())
+    assert "知识库" in answer.as_result()["answer"]
 
 
 def test_knowledge_answer_does_not_answer_realtime_order_status_from_policy_docs() -> None:
@@ -110,4 +102,4 @@ def test_knowledge_answer_does_not_answer_realtime_order_status_from_policy_docs
 
     assert answer.contexts == []
     assert answer.citations == []
-    assert "知识库" in ResponseGuard().render(answer.as_result())
+    assert "知识库" in answer.as_result()["answer"]

@@ -34,19 +34,6 @@ class LangChainVisionModel:
         return VisualEvidence.model_validate(result)
 
 
-class RulesVisionModel:
-    """Conservative local mode: it never pretends to interpret pixels."""
-
-    def examine(self, _image_data_url: str, _user_message: str) -> VisualEvidence:
-        return VisualEvidence(
-            visible_issue="uncertain",
-            affected_part="unknown",
-            summary="规则模式不解析图片，需要人工核验图片证据。",
-            confidence=0.0,
-            needs_clarification=True,
-        )
-
-
 class VisionAgent:
     def __init__(self, vision_model: VisionEvidenceModel) -> None:
         self.vision_model = vision_model

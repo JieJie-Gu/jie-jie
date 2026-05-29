@@ -12,7 +12,7 @@ from sqlalchemy.engine import make_url
 
 from smart_cs.api.routers.conversations import router as conversations_router
 from smart_cs.agents.knowledge import KnowledgeAgent
-from smart_cs.agents.vision import LangChainVisionModel, RulesVisionModel, VisionAgent
+from smart_cs.agents.vision import LangChainVisionModel, VisionAgent
 from smart_cs.application.agent_runtime import AgentRuntime
 from smart_cs.application.conversation_service import ConversationService
 from smart_cs.application.memory import MemoryWriteback
@@ -24,11 +24,7 @@ from smart_cs.domain.errors import (
     ToolPermissionError,
 )
 from smart_cs.infrastructure.database import Database
-from smart_cs.infrastructure.model_factory import (
-    LangChainDecisionModel,
-    RulesDecisionModel,
-    configured_chat_model,
-)
+from smart_cs.infrastructure.model_factory import configured_chat_model
 from smart_cs.infrastructure.repositories import SqlRepository
 from smart_cs.infrastructure.assets import LocalAssetStorage
 from smart_cs.tools.executor import AuthorizedToolExecutor
@@ -83,20 +79,18 @@ def build_runtime(
     repository.create_schema()
     repository.seed_demo_data()
 
-    # 本地学习模式使用确定性规则模型；非 rules 模式使用配置好的 LangChain ChatModel。
     if settings.model_mode.lower() == "rules":
-        decision_model = RulesDecisionModel()
-    else:
-        decision_model = LangChainDecisionModel(configured_chat_model(settings))
+        raise ValueError("rules mode has been removed; configure SMART_CS_MODEL_MODE=llm")
+    chat_model = configured_chat_model(settings)
 
     # 如果调用方没有注入 KnowledgeAgent，并且启用了 RAG，就延迟创建知识问答 Agent。
     if knowledge_agent is None and settings.rag_enabled:
         knowledge_agent = LazyKnowledgeAgent(settings)
 
-    # 组装多 Agent 运行时：工具执行器负责受控业务操作，decision_model 负责路由和规划。
+    # 组装多 Agent 运行时：Supervisor 只调用 sub-agent tools；底层工具仍由 executor 强制鉴权。
     runtime = AgentRuntime(
         executor=AuthorizedToolExecutor(repository),
-        decision_model=decision_model,
+        chat_model=chat_model,
         checkpoint_path=settings.checkpoint_path,
         knowledge_agent=knowledge_agent,
         memory_writeback=MemoryWriteback(repository=repository),
@@ -129,12 +123,7 @@ def create_app(
     app.state.repository = bundle.repository
     app.state.runtime = bundle.runtime
     if vision_agent is None:
-        if app_settings.model_mode.lower() == "rules":
-            vision_agent = VisionAgent(RulesVisionModel())
-        else:
-            vision_agent = VisionAgent(
-                LangChainVisionModel(configured_chat_model(app_settings))
-            )
+        vision_agent = VisionAgent(LangChainVisionModel(configured_chat_model(app_settings)))
     if asset_storage is None:
         asset_storage = LocalAssetStorage(app_settings.asset_root)
     app.state.service = ConversationService(
