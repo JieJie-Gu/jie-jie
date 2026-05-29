@@ -23,6 +23,29 @@ class FakeRuntimeWithVisual:
     config = {"configurable": {"thread_id": "conv-1"}}
 
 
+class FakeRuntimeWithCompactContext:
+    state = {
+        "messages": [HumanMessage(content="订单 O1001 鞋底开胶，帮我申请售后")],
+        "conversation_summary": "User previously asked about order O1001.",
+        "customer_memories": [
+            {
+                "memory_id": "M1",
+                "title": "Shoe size preference",
+                "description": "Usually wears size 42.",
+                "confidence": "high",
+            }
+        ],
+        "pending_confirmation": {
+            "action_id": "A1",
+            "action_type": "after_sales",
+            "status": "pending_confirmation",
+            "order_id": "O1001",
+            "reason": "broken sole",
+        },
+    }
+    config = {"configurable": {"thread_id": "conv-1"}}
+
+
 class RecordingAgent:
     def __init__(self) -> None:
         self.payload = None
@@ -73,3 +96,19 @@ def test_post_sales_tool_injects_visual_evidence_context() -> None:
     assert "usable_for_draft: false" in prompt
     assert "needs_clarification: true" in prompt
     assert "asset_key: conv-1/evidence.jpg" in prompt
+
+
+def test_post_sales_tool_injects_summary_memories_and_pending_context() -> None:
+    agent = RecordingAgent()
+    wrapped = make_post_sales_tool(agent)
+
+    wrapped.func("创建售后申请", FakeRuntimeWithCompactContext())
+
+    prompt = agent.payload["messages"][0]["content"]
+    assert "Conversation summary:" in prompt
+    assert "User previously asked about order O1001." in prompt
+    assert "Active customer memories:" in prompt
+    assert "Shoe size preference" in prompt
+    assert "Usually wears size 42." in prompt
+    assert "Pending confirmation:" in prompt
+    assert "A1" in prompt

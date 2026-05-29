@@ -55,6 +55,7 @@ def _subagent_prompt(
     include_visual_context: bool = False,
 ) -> str:
     original = _latest_human_text(runtime.state.get("messages", []))
+    compact_context = _compact_context_block(runtime.state)
     visual_context = (
         _visual_context_block(runtime.state)
         if include_visual_context
@@ -63,10 +64,47 @@ def _subagent_prompt(
     return (
         "你正在处理以下用户客服请求：\n\n"
         f"{original}\n\n"
+        f"{compact_context}"
         f"{visual_context}"
         f"你被分配的{agent_label}子任务是：\n\n"
         f"{request}"
     )
+
+
+def _compact_context_block(state: dict[str, Any]) -> str:
+    blocks: list[str] = []
+    summary = state.get("conversation_summary")
+    if summary:
+        blocks.append("Conversation summary:\n" + str(summary))
+
+    memories = list(state.get("customer_memories") or [])[:5]
+    if memories:
+        lines = ["Active customer memories:"]
+        for memory in memories:
+            if not isinstance(memory, dict):
+                continue
+            memory_id = memory.get("memory_id") or memory.get("key") or ""
+            title = memory.get("title") or ""
+            description = memory.get("description") or ""
+            confidence = memory.get("confidence") or ""
+            lines.append(
+                f"- {memory_id}: {title}; {description}; confidence={confidence}"
+            )
+        if len(lines) > 1:
+            blocks.append("\n".join(lines))
+
+    pending = state.get("pending_confirmation")
+    if isinstance(pending, dict) and pending:
+        blocks.append(
+            "Pending confirmation:\n"
+            f"- action_id: {pending.get('action_id') or ''}\n"
+            f"- action_type: {pending.get('action_type') or ''}\n"
+            f"- status: {pending.get('status') or ''}\n"
+            f"- order_id: {pending.get('order_id') or ''}\n"
+            f"- reason: {pending.get('reason') or ''}"
+        )
+
+    return ("\n\n".join(blocks) + "\n\n") if blocks else ""
 
 
 def _visual_context_block(state: dict[str, Any]) -> str:

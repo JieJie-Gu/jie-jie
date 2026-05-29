@@ -205,6 +205,10 @@ class ConversationSummarizer:
         self.max_summary_chars = max_summary_chars
         self.summarizer = summarizer
 
+    @property
+    def can_remove_messages(self) -> bool:
+        return self.summarizer is not None
+
     def removable_messages(self, messages: list[AnyMessage]) -> list[AnyMessage]:
         if len(messages) <= self.summary_keep_last:
             return []
@@ -256,7 +260,11 @@ class MemoryWriteback:
         customer_id = state["customer_id"]
         messages = list(state.get("messages") or [])
         removable = self.summarizer.removable_messages(messages)
-        remove_messages = [RemoveMessage(id=str(message.id)) for message in removable]
+        remove_messages = (
+            [RemoveMessage(id=str(message.id)) for message in removable]
+            if self.summarizer.can_remove_messages
+            else []
+        )
         summary = self.summarizer.summarize(state, removable)
         route = state.get("route") or {}
         if summary:

@@ -111,3 +111,57 @@ def test_summarizer_removes_only_human_and_ai_messages() -> None:
     removable = ConversationSummarizer(summary_keep_last=2).removable_messages(messages)
 
     assert [message.id for message in removable] == ["h1", "a1"]
+
+
+def test_memory_writeback_without_real_summarizer_does_not_emit_remove_messages() -> None:
+    update = MemoryWriteback(
+        repository=DummyRepository(),
+        summarizer=ConversationSummarizer(summary_keep_last=1),
+    ).update(
+        {
+            "conversation_id": "conv-1",
+            "customer_id": "C001",
+            "message": "continue",
+            "messages": [
+                HumanMessage(id="h1", content="first"),
+                AIMessage(id="a1", content="second"),
+                HumanMessage(id="h2", content="third"),
+            ],
+            "business_result": {},
+        },
+        store=RecordingStore(),
+    )
+
+    assert update["conversation_summary"]
+    assert update["messages"] == []
+
+
+class FakeSummarizer:
+    def invoke(self, _payload):
+        return AIMessage(content="real summary")
+
+
+def test_memory_writeback_with_real_summarizer_can_emit_remove_messages() -> None:
+    update = MemoryWriteback(
+        repository=DummyRepository(),
+        summarizer=ConversationSummarizer(
+            summary_keep_last=1,
+            summarizer=FakeSummarizer(),
+        ),
+    ).update(
+        {
+            "conversation_id": "conv-1",
+            "customer_id": "C001",
+            "message": "continue",
+            "messages": [
+                HumanMessage(id="h1", content="first"),
+                ToolMessage(id="t1", content="tool", tool_call_id="call-1"),
+                AIMessage(id="a1", content="second"),
+                HumanMessage(id="h2", content="third"),
+            ],
+            "business_result": {},
+        },
+        store=RecordingStore(),
+    )
+
+    assert [message.id for message in update["messages"]] == ["h1", "a1"]

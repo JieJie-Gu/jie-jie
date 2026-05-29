@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import sqlite3
 from pathlib import Path
-from threading import Condition, Event, Lock, Thread, local
+from threading import Condition, Event, Lock, Thread
 from typing import Any
 from uuid import uuid4
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
@@ -18,6 +19,7 @@ from langgraph.types import Command
 from smart_cs.agents.knowledge import KnowledgeAgent
 from smart_cs.agents.state import RuntimeState
 from smart_cs.agents.subagents import create_post_sales_agent, create_pre_sales_agent
+from smart_cs.application.context_builder import RuntimeContextBuilder
 from smart_cs.application.memory import MemoryWriteback, SqlMemoryStoreAdapter
 from smart_cs.application.policy import PolicyEngine
 from smart_cs.domain.enums import ActionStatus
@@ -128,6 +130,7 @@ class AgentRuntime:
         knowledge_agent: KnowledgeAgent | None = None,
         policy_engine: PolicyEngine | None = None,
         memory_writeback: MemoryWriteback | None = None,
+        context_builder: RuntimeContextBuilder | None = None,
         graph_store: Any | None = None,
         memory_store: Any | None = None,
         turn_lease_ttl_seconds: float = TURN_LEASE_TTL_SECONDS,
@@ -149,10 +152,21 @@ class AgentRuntime:
         self.policy_engine = policy_engine or PolicyEngine()
         self.memory_writeback = memory_writeback
         self.store = memory_store or SqlMemoryStoreAdapter(executor.repository)
+        self.context_builder = context_builder or RuntimeContextBuilder(
+            executor.repository,
+            self.store,
+        )
         self._graph_store = graph_store or InMemoryStore()
         self._turn_lease_ttl_seconds = turn_lease_ttl_seconds
         self._turn_lease_renew_interval_seconds = renew_interval_seconds
-        self._active_turn = local()
+        self._current_tool_context_var: ContextVar[RuntimeToolContext | None] = ContextVar(
+            f"smart_cs_tool_context_{id(self)}",
+            default=None,
+        )
+        self._current_heartbeat_var: ContextVar[_TurnLeaseHeartbeat | None] = ContextVar(
+            f"smart_cs_turn_heartbeat_{id(self)}",
+            default=None,
+        )
         self._lifecycle = Condition()
         self._active_turn_count = 0
         self._closing = False
@@ -179,7 +193,10 @@ class AgentRuntime:
                 conversation_id, customer_id
             )
             if pending_action is not None:
-                return self._pending_result(pending_action)
+                return self._pending_result(
+                    pending_action,
+                    interrupt_id=self._current_interrupt_id(conversation_id),
+                )
 
             previous_action = self.executor.latest_action_for_conversation(
                 conversation_id, customer_id
@@ -187,6 +204,23 @@ class AgentRuntime:
             previous_action_id = previous_action.get("action_id") if previous_action else None
             request_id = f"{conversation_id}:{uuid4()}"
             human_message = HumanMessage(id=f"{request_id}:human", content=message)
+            runtime_context = self.context_builder.build(
+                conversation_id=conversation_id,
+                customer_id=customer_id,
+                message=message,
+                visual_evidence=visual_evidence,
+                asset_key=asset_key,
+            )
+            context_text = self.context_builder.system_message(runtime_context)
+            graph_messages: list[BaseMessage] = [human_message]
+            if context_text:
+                graph_messages.insert(
+                    0,
+                    SystemMessage(
+                        id=f"{conversation_id}:runtime-context",
+                        content=context_text,
+                    ),
+                )
             ctx = RuntimeToolContext(
                 conversation_id=conversation_id,
                 customer_id=customer_id,
@@ -198,7 +232,7 @@ class AgentRuntime:
             with self._tool_context(ctx):
                 graph_result = self.graph.invoke(
                     {
-                        "messages": [human_message],
+                        "messages": graph_messages,
                         "conversation_id": conversation_id,
                         "customer_id": customer_id,
                         "request_id": request_id,
@@ -206,6 +240,9 @@ class AgentRuntime:
                         "has_image": visual_evidence is not None,
                         "visual_evidence": visual_evidence,
                         "asset_key": asset_key,
+                        "conversation_summary": runtime_context.get("conversation_summary"),
+                        "customer_memories": runtime_context.get("customer_memories") or [],
+                        "pending_confirmation": runtime_context.get("pending_confirmation"),
                     },
                     config=self._config(conversation_id),
                 )
@@ -214,7 +251,7 @@ class AgentRuntime:
                 graph_result,
                 ctx,
                 message=message,
-                fallback_messages=[human_message],
+                fallback_messages=graph_messages,
             )
             if interrupt_result is not None:
                 return interrupt_result
@@ -225,7 +262,7 @@ class AgentRuntime:
                 customer_id=customer_id,
                 request_id=request_id,
                 message=message,
-                fallback_messages=[human_message],
+                fallback_messages=graph_messages,
                 previous_action_id=previous_action_id,
             )
             self._write_memory(
@@ -233,7 +270,7 @@ class AgentRuntime:
                 customer_id=customer_id,
                 request_id=request_id,
                 message=message,
-                messages=graph_result.get("messages") or [human_message],
+                messages=graph_result.get("messages") or graph_messages,
                 business_result=result.get("result"),
             )
             return result
@@ -264,10 +301,12 @@ class AgentRuntime:
             )
             graph_result: dict[str, Any] | None = None
             if approved:
+                interrupt_id = self._current_interrupt_id(conversation_id)
                 graph_result = self._resume_with_decision(
                     conversation_id,
                     ctx,
                     {"type": "approve"},
+                    interrupt_id=interrupt_id,
                 )
                 result = self.executor.latest_action_for_conversation(conversation_id, customer_id)
                 if result is None or result.get("action_id") != action_id:
@@ -283,10 +322,12 @@ class AgentRuntime:
                     )
             else:
                 try:
+                    interrupt_id = self._current_interrupt_id(conversation_id)
                     graph_result = self._resume_with_decision(
                         conversation_id,
                         ctx,
                         {"type": "reject", "message": "用户取消本次申请。"},
+                        interrupt_id=interrupt_id,
                     )
                 finally:
                     result = self.executor.cancel_pending_action(
@@ -354,12 +395,44 @@ class AgentRuntime:
         conversation_id: str,
         ctx: RuntimeToolContext,
         decision: dict[str, Any],
+        *,
+        interrupt_id: str | None = None,
+    ) -> dict[str, Any]:
+        if interrupt_id:
+            try:
+                return self._invoke_resume(
+                    conversation_id,
+                    ctx,
+                    {interrupt_id: {"decisions": [decision]}},
+                )
+            except Exception as error:
+                if not self._is_resume_shape_error(error):
+                    raise
+                LOGGER.debug(
+                    "Falling back to unkeyed HITL resume payload for interrupt %s",
+                    interrupt_id,
+                    exc_info=True,
+                )
+        return self._invoke_resume(conversation_id, ctx, {"decisions": [decision]})
+
+    def _invoke_resume(
+        self,
+        conversation_id: str,
+        ctx: RuntimeToolContext,
+        resume_payload: dict[str, Any],
     ) -> dict[str, Any]:
         with self._tool_context(ctx):
             return self.graph.invoke(
-                Command(resume={"decisions": [decision]}),
+                Command(resume=resume_payload),
                 config=self._config(conversation_id),
             )
+
+    @staticmethod
+    def _is_resume_shape_error(error: Exception) -> bool:
+        if isinstance(error, KeyError) and error.args and error.args[0] == "decisions":
+            return True
+        text = str(error).lower()
+        return "resume" in text or "interrupt" in text or "decisions" in text
 
     def _result_from_interrupt(
         self,
@@ -372,15 +445,20 @@ class AgentRuntime:
         interrupts = graph_result.get("__interrupt__")
         if not interrupts:
             return None
-        payload = getattr(interrupts[0], "value", interrupts[0])
+        interrupt = interrupts[0]
+        interrupt_id = getattr(interrupt, "id", None)
+        payload = getattr(interrupt, "value", interrupt)
         action_request = self._first_action_request(payload)
         if action_request is None:
-            return {
+            result = {
                 "status": ActionStatus.PENDING_CONFIRMATION.value,
                 "pending_confirmation": {},
                 "reply": "该操作需要确认。",
                 "agents_invoked": self._agents_from_messages(graph_result.get("messages") or []),
             }
+            if interrupt_id:
+                result["interrupt_id"] = interrupt_id
+            return result
 
         action = self._draft_action_for_interrupt(action_request, ctx)
         if action.get("status") != ActionStatus.PENDING_CONFIRMATION.value:
@@ -394,7 +472,11 @@ class AgentRuntime:
             messages=graph_result.get("messages") or fallback_messages,
             business_result=action,
         )
-        return self._pending_result(action, graph_result.get("messages") or fallback_messages)
+        return self._pending_result(
+            action,
+            graph_result.get("messages") or fallback_messages,
+            interrupt_id=interrupt_id,
+        )
 
     def _draft_action_for_interrupt(
         self,
@@ -480,13 +562,18 @@ class AgentRuntime:
         self,
         action: dict[str, Any],
         messages: list[BaseMessage] | None = None,
+        *,
+        interrupt_id: str | None = None,
     ) -> dict[str, Any]:
-        return {
+        result = {
             "status": ActionStatus.PENDING_CONFIRMATION.value,
             "pending_confirmation": action,
             "reply": self._reply_for_action(action),
             "agents_invoked": self._agents_from_messages(messages or []),
         }
+        if interrupt_id:
+            result["interrupt_id"] = interrupt_id
+        return result
 
     def _completed_result(
         self,
@@ -513,7 +600,7 @@ class AgentRuntime:
     ) -> None:
         if self.memory_writeback is None:
             return
-        self.memory_writeback.update(
+        updates = self.memory_writeback.update(
             {
                 "conversation_id": conversation_id,
                 "customer_id": customer_id,
@@ -524,10 +611,28 @@ class AgentRuntime:
             },
             store=self.store,
         )
+        checkpoint_updates: dict[str, Any] = {}
+        if updates.get("conversation_summary"):
+            checkpoint_updates["conversation_summary"] = updates["conversation_summary"]
+        if updates.get("messages"):
+            checkpoint_updates["messages"] = updates["messages"]
+        if checkpoint_updates:
+            self.graph.update_state(self._config(conversation_id), checkpoint_updates)
 
     @staticmethod
     def _config(conversation_id: str) -> dict[str, dict[str, str]]:
         return {"configurable": {"thread_id": conversation_id}}
+
+    def _current_interrupt_id(self, conversation_id: str) -> str | None:
+        try:
+            snapshot = self.graph.get_state(self._config(conversation_id))
+        except Exception:
+            LOGGER.debug("Unable to read current graph interrupt state", exc_info=True)
+            return None
+        interrupts = getattr(snapshot, "interrupts", None) or ()
+        if not interrupts:
+            return None
+        return getattr(interrupts[0], "id", None)
 
     @staticmethod
     def _reply_for_action(action: dict[str, Any]) -> str:
@@ -599,18 +704,14 @@ class AgentRuntime:
 
     @contextmanager
     def _tool_context(self, ctx: RuntimeToolContext) -> Iterator[None]:
-        previous = getattr(self._active_turn, "tool_context", None)
-        self._active_turn.tool_context = ctx
+        token = self._current_tool_context_var.set(ctx)
         try:
             yield
         finally:
-            if previous is None:
-                del self._active_turn.tool_context
-            else:
-                self._active_turn.tool_context = previous
+            self._current_tool_context_var.reset(token)
 
     def _current_tool_context(self) -> RuntimeToolContext:
-        ctx = getattr(self._active_turn, "tool_context", None)
+        ctx = self._current_tool_context_var.get()
         if ctx is None:
             raise RuntimeError("No active tool context")
         return ctx
@@ -634,8 +735,7 @@ class AgentRuntime:
                 ttl_seconds=self._turn_lease_ttl_seconds,
                 renew_interval_seconds=self._turn_lease_renew_interval_seconds,
             )
-            previous_heartbeat = getattr(self._active_turn, "heartbeat", None)
-            self._active_turn.heartbeat = heartbeat
+            heartbeat_token = self._current_heartbeat_var.set(heartbeat)
             started = False
             try:
                 heartbeat.start()
@@ -651,10 +751,7 @@ class AgentRuntime:
                     try:
                         self.executor.release_turn_lease(conversation_id, customer_id, token)
                     finally:
-                        if previous_heartbeat is None:
-                            del self._active_turn.heartbeat
-                        else:
-                            self._active_turn.heartbeat = previous_heartbeat
+                        self._current_heartbeat_var.reset(heartbeat_token)
         finally:
             self._end_turn()
 
@@ -671,7 +768,7 @@ class AgentRuntime:
                 self._lifecycle.notify_all()
 
     def _current_turn_fence(self) -> TurnFence | None:
-        heartbeat = getattr(self._active_turn, "heartbeat", None)
+        heartbeat = self._current_heartbeat_var.get()
         if heartbeat is None:
             return None
         return heartbeat.turn_fence()
