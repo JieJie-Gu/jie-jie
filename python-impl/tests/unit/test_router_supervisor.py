@@ -2,7 +2,7 @@ import pytest
 
 from smart_cs.agents.router import RouterAgent
 from smart_cs.agents.guardrails import ResponseGuard
-from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
+from smart_cs.agents.state import ConversationSlots, RouteAnalysis, RouterContext, SupervisorDecision
 from smart_cs.agents.supervisor import SupervisorAgent, validate_decision
 from smart_cs.infrastructure.model_factory import RulesDecisionModel
 
@@ -16,7 +16,10 @@ def test_route_analysis_does_not_authorize_tools() -> None:
 
 def test_write_decision_always_requires_confirmation() -> None:
     decision = validate_decision(
-        SupervisorDecision(agents=["OrderAgent", "AfterSalesAgent"], action="draft_after_sales")
+        SupervisorDecision(
+            agents=["OrderAgent", "KnowledgeAgent", "AfterSalesAgent"],
+            action="draft_after_sales",
+        )
     )
 
     assert decision.requires_confirmation is True
@@ -73,9 +76,21 @@ def test_rules_agents_plan_after_sales_in_business_order() -> None:
     assert route == RouteAnalysis(
         intent="after_sales", entities={"order_id": "O1001"}, risk="medium"
     )
-    assert decision.agents == ["OrderAgent", "AfterSalesAgent"]
+    assert decision.agents == ["OrderAgent", "KnowledgeAgent", "AfterSalesAgent"]
     assert decision.action == "draft_after_sales"
     assert decision.requires_confirmation is True
+
+
+def test_rules_model_marks_follow_up_when_slots_exist() -> None:
+    context = RouterContext(
+        current_message="那我要退货",
+        conversation_slots=ConversationSlots(active_order_id="O1001"),
+    )
+
+    route = RulesDecisionModel().route(context)
+
+    assert route.turn_type == "follow_up"
+    assert route.intent == "after_sales"
 
 
 def test_supervisor_synthesizes_guarded_order_fact_before_pending_confirmation() -> None:

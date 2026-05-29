@@ -9,20 +9,29 @@ from threading import Condition, Event, Lock, Thread, local
 from typing import Any, Protocol
 from uuid import uuid4
 
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
+from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, interrupt
 
+from smart_cs.agents.state import RuntimeContext
 from smart_cs.agents.guardrails import ResponseGuard
 from smart_cs.agents.knowledge import KnowledgeAgent
 from smart_cs.agents.router import RouterAgent, RoutingDecisionModel
 from smart_cs.agents.specialists import SpecialistDispatcher
-from smart_cs.agents.state import RouteAnalysis, RuntimeState, SupervisorDecision
+from smart_cs.agents.state import ConversationSlots, RouteAnalysis, RuntimeState, SupervisorDecision
 from smart_cs.agents.supervisor import PlanningDecisionModel, SupervisorAgent
+from smart_cs.application.context_projector import ContextProjector
+from smart_cs.application.memory import MemoryWriteback
+from smart_cs.application.policy import PolicyEngine
+from smart_cs.application.state_update import StateUpdater, carry_slots
 from smart_cs.domain.evidence import VisualEvidence
 from smart_cs.domain.enums import ActionStatus
 from smart_cs.domain.errors import ConversationLeaseLostError
 from smart_cs.infrastructure.model_factory import RulesDecisionModel
+from smart_cs.infrastructure.prompts import PROMPT_VERSION
 from smart_cs.tools.executor import AuthorizedToolExecutor, TurnFence
 
 
@@ -139,6 +148,10 @@ class AgentRuntime:
         decision_model: DecisionModel,
         checkpoint_path: str | Path,
         knowledge_agent: KnowledgeAgent | None = None,
+        context_projector: ContextProjector | None = None,
+        policy_engine: PolicyEngine | None = None,
+        memory_writeback: MemoryWriteback | None = None,
+        store: Any | None = None,
         turn_lease_ttl_seconds: float = TURN_LEASE_TTL_SECONDS,
         turn_lease_renew_interval_seconds: float | None = None,
     ) -> None:
@@ -167,6 +180,11 @@ class AgentRuntime:
         self.specialists = SpecialistDispatcher(executor, knowledge_agent)
         # guard 负责把业务结果渲染成可对外回复的受控内容。
         self.guard = ResponseGuard()
+        self.context_projector = context_projector or ContextProjector()
+        self.policy_engine = policy_engine or PolicyEngine()
+        self.state_updater = StateUpdater()
+        self.memory_writeback = memory_writeback
+        self.store = store or InMemoryStore()
         self._turn_lease_ttl_seconds = turn_lease_ttl_seconds
         self._turn_lease_renew_interval_seconds = renew_interval_seconds
         # thread-local 保存当前线程正在处理的 turn lease heartbeat。
@@ -212,11 +230,13 @@ class AgentRuntime:
                 return self._pending_result(pending_action, state)
 
             # 没有待确认动作时，从初始 RuntimeState 开始执行整条 LangGraph 工作流。
+            request_id = f"{conversation_id}:{uuid4()}"
             result = self.graph.invoke(
                 {
+                    "messages": [HumanMessage(id=f"{request_id}:human", content=message)],
                     "conversation_id": conversation_id,
                     "customer_id": customer_id,
-                    "request_id": f"{conversation_id}:{uuid4()}",
+                    "request_id": request_id,
                     "message": message,
                     "has_image": visual_evidence is not None,
                     "visual_evidence": visual_evidence,
@@ -230,8 +250,15 @@ class AgentRuntime:
                     "guarded_contents": [],
                     "reply": None,
                     "status": "running",
+                    "read_results": [],
+                    "policy_decision": None,
                 },
                 config=self._config(conversation_id),
+                context=RuntimeContext(
+                    conversation_id=conversation_id,
+                    customer_id=customer_id,
+                    prompt_version=PROMPT_VERSION,
+                ).model_dump(),
             )
             return self._public_result(result)
 
@@ -361,22 +388,33 @@ class AgentRuntime:
     def _build_graph(self):
         """构建 LangGraph 编排图。"""
 
-        workflow = StateGraph(RuntimeState)
+        workflow = StateGraph(RuntimeState, context_schema=RuntimeContext)
         # 每个 node 都是一个可 checkpoint 的步骤，返回值会合并进 RuntimeState。
+        workflow.add_node("context_project", self._context_project_node)
         workflow.add_node("router", self._router_node)
+        workflow.add_node("slot_carry", self._slot_carry_node)
         workflow.add_node("supervisor", self._supervisor_node)
-        workflow.add_node("specialists", self._specialists_node)
+        workflow.add_node("read_specialists", self._read_specialists_node)
+        workflow.add_node("policy_check", self._policy_check_node)
+        workflow.add_node("write_specialists_or_handoff", self._write_specialists_or_handoff_node)
         workflow.add_node("validate_evidence", self._validate_evidence_node)
+        workflow.add_node("state_update", self._state_update_node)
+        workflow.add_node("memory_writeback", self._memory_writeback_node)
         workflow.add_node("confirm_action", self._confirm_action_node)
         workflow.add_node("guard", self._guard_node)
         workflow.add_node("synthesize", self._synthesize_node)
-        # 主路径：路由 -> 规划 -> specialist 执行 -> 证据校验 -> guard -> 合成回复。
-        workflow.add_edge(START, "router")
-        workflow.add_edge("router", "supervisor")
-        workflow.add_edge("supervisor", "specialists")
-        workflow.add_edge("specialists", "validate_evidence")
-        workflow.add_edge("validate_evidence", "guard")
-        workflow.add_edge("confirm_action", "guard")
+        workflow.add_edge(START, "context_project")
+        workflow.add_edge("context_project", "router")
+        workflow.add_edge("router", "slot_carry")
+        workflow.add_edge("slot_carry", "supervisor")
+        workflow.add_edge("supervisor", "read_specialists")
+        workflow.add_edge("read_specialists", "policy_check")
+        workflow.add_edge("policy_check", "write_specialists_or_handoff")
+        workflow.add_edge("write_specialists_or_handoff", "validate_evidence")
+        workflow.add_edge("validate_evidence", "state_update")
+        workflow.add_edge("state_update", "memory_writeback")
+        workflow.add_edge("memory_writeback", "guard")
+        workflow.add_edge("confirm_action", "state_update")
         workflow.add_edge("guard", "synthesize")
         # 如果合成后仍有 pending_confirmation，就进入 confirm_action 中断节点。
         workflow.add_conditional_edges(
@@ -384,32 +422,72 @@ class AgentRuntime:
             self._next_after_synthesis,
             {"confirm_action": "confirm_action", "end": END},
         )
-        return workflow.compile(checkpointer=self._checkpointer)
+        return workflow.compile(checkpointer=self._checkpointer, store=self.store)
+
+    def _context_project_node(
+        self, state: RuntimeState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, Any]:
+        self._assert_turn_lease()
+        memories = runtime.store.search(
+            ("customer", state["customer_id"], "memories"),
+            query=state["message"],
+            limit=5,
+        )
+        customer_memories = [
+            {
+                "memory_id": getattr(item, "key", f"memory-{index}"),
+                "memory_type": item.value.get("memory_type", "service_event"),
+                "value": item.value,
+                "title": item.value.get("title"),
+                "description": item.value.get("description"),
+                "confidence": item.value.get("confidence", "medium"),
+                "source": item.value.get("source", "runtime_store"),
+            }
+            for index, item in enumerate(memories)
+        ]
+        projected_state = {**state, "customer_memories": customer_memories}
+        router_context = self.context_projector.build_router_context(projected_state)
+        return {
+            "customer_memories": customer_memories,
+            "decision_context": {"router_context": router_context.model_dump()},
+        }
 
     def _router_node(self, state: RuntimeState) -> dict[str, Any]:
         """Router 节点：分析意图、实体和风险。"""
 
         self._assert_turn_lease()
-        route = self.router.analyze(state["message"])
+        context = self.context_projector.build_router_context(state)
+        route = self.router.analyze(context)
         self._assert_turn_lease()
-        return {"route": route.model_dump()}
+        return {"route": route.model_dump(), "decision_context": {"router_context": context.model_dump()}}
+
+    def _slot_carry_node(self, state: RuntimeState) -> dict[str, Any]:
+        route = RouteAnalysis.model_validate(state["route"])
+        slots = ConversationSlots.model_validate(state.get("conversation_slots") or {})
+        updated = carry_slots(route, slots)
+        return {"route": updated.model_dump()}
 
     def _supervisor_node(self, state: RuntimeState) -> dict[str, Any]:
         """Supervisor 节点：根据路由结果规划实际要调用的 Agent 和动作。"""
 
         self._assert_turn_lease()
         route = RouteAnalysis.model_validate(state["route"])
-        decision = self.supervisor.plan(
-            state["message"], route, has_image=bool(state.get("has_image"))
-        )
+        context = self.context_projector.build_supervisor_context(state, route)
+        decision = self.supervisor.plan(context, has_image=bool(state.get("has_image")))
         self._assert_turn_lease()
-        return {"decision": decision.model_dump()}
+        return {
+            "decision": decision.model_dump(),
+            "decision_context": {
+                **state.get("decision_context", {}),
+                "supervisor_context": context.model_dump(),
+            },
+        }
 
-    def _specialists_node(self, state: RuntimeState) -> dict[str, Any]:
-        """Specialists 节点：按规划执行具体 specialist，并产出业务结果。"""
+    def _read_specialists_node(self, state: RuntimeState) -> dict[str, Any]:
+        """Read specialists collect facts before policy/write decisions."""
 
         self._assert_turn_lease()
-        execution = self.specialists.execute(
+        execution = self.specialists.execute_read_agents(
             message=state["message"],
             customer_id=state["customer_id"],
             route=RouteAnalysis.model_validate(state["route"]),
@@ -422,8 +500,69 @@ class AgentRuntime:
         )
         self._assert_turn_lease()
         return {
-            "agents_invoked": execution.agents_invoked,
+            "agents_invoked": [*state.get("agents_invoked", []), *execution.agents_invoked],
+            "read_results": execution.results,
             "specialist_results": execution.results,
+        }
+
+    def _policy_check_node(self, state: RuntimeState) -> dict[str, Any]:
+        route = RouteAnalysis.model_validate(state["route"])
+        if route.intent != "after_sales":
+            return {"policy_decision": None}
+        order_result = next(
+            (
+                result
+                for result in state.get("read_results", [])
+                if "order_id" in result or result.get("status") == "information_required"
+            ),
+            {},
+        )
+        knowledge_result = next(
+            (result for result in state.get("read_results", []) if "citations" in result),
+            {},
+        )
+        decision = self.policy_engine.evaluate_after_sales(
+            order_result=order_result,
+            knowledge_result=knowledge_result,
+            visual_evidence=state.get("visual_evidence"),
+        )
+        return {"policy_decision": decision.model_dump()}
+
+    def _write_specialists_or_handoff_node(self, state: RuntimeState) -> dict[str, Any]:
+        decision = SupervisorDecision.model_validate(state["decision"])
+        policy_decision = state.get("policy_decision")
+        if policy_decision is not None and policy_decision.get("next_action") == "explain":
+            result = {"status": "policy_explained", "message": policy_decision["explanation"]}
+            return {
+                "business_result": result,
+                "specialist_results": list(state.get("specialist_results", [])) + [result],
+            }
+        if policy_decision is not None and policy_decision.get("next_action") == "handoff":
+            decision = decision.model_copy(
+                update={
+                    "agents": ["HandoffAgent"],
+                    "action": "draft_handoff",
+                    "requires_confirmation": True,
+                }
+            )
+        execution = self.specialists.execute_write_agents(
+            message=state["message"],
+            customer_id=state["customer_id"],
+            route=RouteAnalysis.model_validate(state["route"]),
+            decision=decision,
+            conversation_id=state["conversation_id"],
+            idempotency_key=state.get("request_id"),
+            turn_fence=self._current_turn_fence(),
+            visual_evidence=state.get("visual_evidence"),
+            asset_key=state.get("asset_key"),
+        )
+        if not execution.results:
+            terminal = (state.get("read_results") or [{"status": "completed"}])[-1]
+            return {"business_result": terminal}
+        results = list(state.get("specialist_results", [])) + execution.results
+        return {
+            "agents_invoked": [*state.get("agents_invoked", []), *execution.agents_invoked],
+            "specialist_results": results,
             "business_result": execution.result,
             "pending_confirmation": execution.pending_confirmation,
         }
@@ -500,6 +639,16 @@ class AgentRuntime:
             "pending_confirmation": handoff,
         }
 
+    def _state_update_node(self, state: RuntimeState) -> dict[str, Any]:
+        return self.state_updater.update(state)
+
+    def _memory_writeback_node(
+        self, state: RuntimeState, runtime: Runtime[RuntimeContext]
+    ) -> dict[str, Any]:
+        if self.memory_writeback is None:
+            return {}
+        return self.memory_writeback.update(state, store=runtime.store)
+
     @staticmethod
     def _next_after_synthesis(state: RuntimeState) -> str:
         """决定合成回复后是结束，还是进入确认中断节点。"""
@@ -536,18 +685,20 @@ class AgentRuntime:
             result = self.executor.submit_confirmed_action(
                 action["action_id"],
                 state["customer_id"],
+                caller_agent="ConfirmActionNode",
                 turn_fence=self._current_turn_fence(),
             )
             self._assert_turn_lease()
-            return {"business_result": result}
+            return {"business_result": result, "pending_confirmation": None}
         # 用户拒绝时取消 pending action。
         result = self.executor.cancel_pending_action(
             action["action_id"],
             state["customer_id"],
+            caller_agent="ConfirmActionNode",
             turn_fence=self._current_turn_fence(),
         )
         self._assert_turn_lease()
-        return {"business_result": result}
+        return {"business_result": result, "pending_confirmation": None}
 
     def _guard_node(self, state: RuntimeState) -> dict[str, Any]:
         """Guard 节点：把业务结果渲染成受控回复片段。"""
@@ -566,8 +717,17 @@ class AgentRuntime:
         reply = self.supervisor.synthesize(results, state["guarded_contents"])
         self._assert_turn_lease()
         if self._next_after_synthesis(state) == "confirm_action":
-            return {"status": ActionStatus.PENDING_CONFIRMATION.value, "reply": reply}
-        return {"status": "completed", "reply": reply, "pending_confirmation": None}
+            return {
+                "status": ActionStatus.PENDING_CONFIRMATION.value,
+                "reply": reply,
+                "messages": [AIMessage(id=f"{state['request_id']}:pending:assistant", content=reply)],
+            }
+        return {
+            "status": "completed",
+            "reply": reply,
+            "pending_confirmation": None,
+            "messages": [AIMessage(id=f"{state['request_id']}:completed:assistant", content=reply)],
+        }
 
     @staticmethod
     def _config(conversation_id: str) -> dict[str, dict[str, str]]:
@@ -582,10 +742,16 @@ class AgentRuntime:
 
         if approved:
             return self.executor.submit_confirmed_action(
-                action_id, customer_id, turn_fence=self._current_turn_fence()
+                action_id,
+                customer_id,
+                caller_agent="ConfirmActionNode",
+                turn_fence=self._current_turn_fence(),
             )
         return self.executor.cancel_pending_action(
-            action_id, customer_id, turn_fence=self._current_turn_fence()
+            action_id,
+            customer_id,
+            caller_agent="ConfirmActionNode",
+            turn_fence=self._current_turn_fence(),
         )
 
     def _pending_result(

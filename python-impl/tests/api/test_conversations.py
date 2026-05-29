@@ -7,6 +7,7 @@ from smart_cs.config import Settings
 from smart_cs.domain.errors import ConversationBusyError
 from smart_cs.infrastructure.model_factory import RulesDecisionModel
 from smart_cs.main import create_app
+from tests.api.support import StaticKnowledgeAgent
 
 
 @pytest.fixture
@@ -15,8 +16,9 @@ def client(tmp_path):
         database_url=f"sqlite:///{tmp_path / 'api.db'}",
         checkpoint_path=tmp_path / "checkpoints.db",
         model_mode="rules",
+        rag_enabled=False,
     )
-    with TestClient(create_app(settings)) as test_client:
+    with TestClient(create_app(settings, knowledge_agent=StaticKnowledgeAgent())) as test_client:
         yield test_client
 
 
@@ -151,7 +153,7 @@ def test_runs_endpoint_returns_latest_pending_run_with_related_tool_calls(
     body = response.json()
     assert body["tool_calls"]
     run = body["runs"][0]
-    assert run["agents"] == ["OrderAgent", "AfterSalesAgent"]
+    assert run["agents"] == ["OrderAgent", "KnowledgeAgent", "AfterSalesAgent"]
     assert run["status"] == "pending_confirmation"
     assert run["pending_action_id"] == pending["pending_action"]["action_id"]
     assert run["reply"] == pending["reply"]

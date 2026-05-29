@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
+from smart_cs.agents.state import RouteAnalysis, SupervisorContext, SupervisorDecision
 
 
 DECLARED_SPECIALISTS = frozenset(
@@ -24,7 +24,7 @@ ACTION_WRITE_AGENTS = {action: agent for agent, action in WRITE_AGENT_ACTIONS.it
 
 
 class PlanningDecisionModel(Protocol):
-    def plan(self, message: str, route: RouteAnalysis) -> SupervisorDecision: ...
+    def plan(self, context: SupervisorContext) -> SupervisorDecision: ...
 
 
 IMAGE_AFTER_SALES_AGENTS = [
@@ -68,8 +68,12 @@ def validate_decision(decision: SupervisorDecision, *, has_image: bool = False) 
     if decision.action == "draft_after_sales":
         if "OrderAgent" not in decision.agents:
             raise ValueError("Action draft_after_sales requires OrderAgent")
+        if "KnowledgeAgent" not in decision.agents:
+            raise ValueError("Action draft_after_sales requires KnowledgeAgent")
         if decision.agents.index("OrderAgent") > decision.agents.index("AfterSalesAgent"):
             raise ValueError("Action draft_after_sales requires OrderAgent before AfterSalesAgent")
+        if decision.agents.index("KnowledgeAgent") > decision.agents.index("AfterSalesAgent"):
+            raise ValueError("Action draft_after_sales requires KnowledgeAgent before AfterSalesAgent")
 
     if decision.action in WRITE_ACTIONS and not decision.requires_confirmation:
         return decision.model_copy(update={"requires_confirmation": True})
@@ -83,9 +87,13 @@ class SupervisorAgent:
         self.decision_model = decision_model
 
     def plan(
-        self, message: str, route: RouteAnalysis, *, has_image: bool = False
+        self, context: SupervisorContext | str, route: RouteAnalysis | None = None, *, has_image: bool = False
     ) -> SupervisorDecision:
-        return validate_decision(self.decision_model.plan(message, route), has_image=has_image)
+        if isinstance(context, str):
+            if route is None:
+                raise ValueError("route is required when planning from a raw message")
+            context = SupervisorContext(current_message=context, route=route)
+        return validate_decision(self.decision_model.plan(context), has_image=has_image)
 
     def synthesize(
         self, specialist_results: list[dict[str, Any]], guarded_contents: list[str]

@@ -10,6 +10,7 @@ from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
 from smart_cs.domain.models import Order, PendingAction, Product, Ticket
 from smart_cs.domain.repositories import CustomerFactsRepository
 from smart_cs.tools.customer_tools import CUSTOMER_TOOL_SCHEMAS
+from smart_cs.tools.policy import ToolPolicy, ToolRegistry, default_tool_registry
 
 
 @dataclass(frozen=True)
@@ -21,8 +22,13 @@ class TurnFence:
 class AuthorizedToolExecutor:
     """Execute declared customer tools under deterministic business permissions."""
 
-    def __init__(self, repository: CustomerFactsRepository) -> None:
+    def __init__(
+        self,
+        repository: CustomerFactsRepository,
+        tool_registry: ToolRegistry | None = None,
+    ) -> None:
         self.repository = repository
+        self.tool_registry = tool_registry or default_tool_registry()
         self._read_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "search_products": self._search_products,
             "lookup_order": self._lookup_order,
@@ -38,9 +44,13 @@ class AuthorizedToolExecutor:
         tool_name: str,
         arguments: dict[str, Any],
         *,
+        caller_agent: str,
         turn_fence: TurnFence | None = None,
     ) -> dict[str, Any]:
         provided_arguments = dict(arguments)
+        policy = self._authorize_tool(tool_name, caller_agent)
+        if tool_name in self._write_handlers and not policy.requires_confirmation:
+            raise ToolPermissionError(f"Write tool {tool_name} must require confirmation")
 
         def operation() -> dict[str, Any]:
             if tool_name not in self.declared_tools:
@@ -112,8 +122,14 @@ class AuthorizedToolExecutor:
         return self._persisted_action_result(action)
 
     def submit_confirmed_action(
-        self, action_id: str, customer_id: str, *, turn_fence: TurnFence | None = None
+        self,
+        action_id: str,
+        customer_id: str,
+        *,
+        caller_agent: str,
+        turn_fence: TurnFence | None = None,
     ) -> dict[str, Any]:
+        self._authorize_tool("submit_confirmed_action", caller_agent)
         arguments = {"action_id": action_id, "customer_id": customer_id}
 
         def operation(session: Any) -> dict[str, Any]:
@@ -124,8 +140,14 @@ class AuthorizedToolExecutor:
         return self._audited_write_call("submit_confirmed_action", arguments, operation)
 
     def cancel_pending_action(
-        self, action_id: str, customer_id: str, *, turn_fence: TurnFence | None = None
+        self,
+        action_id: str,
+        customer_id: str,
+        *,
+        caller_agent: str,
+        turn_fence: TurnFence | None = None,
     ) -> dict[str, Any]:
+        self._authorize_tool("cancel_pending_action", caller_agent)
         arguments = {"action_id": action_id, "customer_id": customer_id}
 
         def operation(session: Any) -> dict[str, Any]:
@@ -185,6 +207,12 @@ class AuthorizedToolExecutor:
         if order is None:
             raise ToolPermissionError("Order is not available to this customer")
         return order
+
+    def _authorize_tool(self, tool_name: str, caller_agent: str) -> ToolPolicy:
+        policy = self.tool_registry.get(tool_name)
+        if caller_agent not in policy.allowed_agents:
+            raise ToolPermissionError(f"Tool {tool_name} is not allowed for {caller_agent}")
+        return policy
 
     def _invoke_fenced_write(
         self,

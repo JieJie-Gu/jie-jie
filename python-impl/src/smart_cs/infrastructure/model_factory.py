@@ -5,8 +5,9 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
-from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
+from smart_cs.agents.state import RouteAnalysis, RouterContext, SupervisorContext, SupervisorDecision
 from smart_cs.config import Settings
+from smart_cs.infrastructure.prompts import ROUTER_PROMPT, SUPERVISOR_PROMPT
 
 
 ORDER_ID_PATTERN = re.compile(r"(O\d+)", re.IGNORECASE)
@@ -22,33 +23,50 @@ class RulesDecisionModel:
     _knowledge_domain_keywords = ("退货", "退款", "售后", "换货", "物流", "发货", "配送", "运费", "保养", "尺码")
     _knowledge_question_keywords = ("规则", "政策", "多久", "几天", "期限", "怎么", "如何", "说明", "什么")
 
-    def route(self, message: str) -> RouteAnalysis:
+    def route(self, context: RouterContext | str) -> RouteAnalysis:
+        if isinstance(context, str):
+            context = RouterContext(current_message=context)
+        message = context.current_message
         entities: dict[str, str] = {}
         order_match = ORDER_ID_PATTERN.search(message)
         if order_match is not None:
             entities["order_id"] = order_match.group(1).upper()
+        turn_type = self._infer_turn_type(message, context)
 
         if self._contains(message, self._handoff_keywords):
-            return RouteAnalysis(intent="handoff", entities=entities, risk="high")
+            return RouteAnalysis(intent="handoff", entities=entities, risk="high", turn_type=turn_type)
         if self._contains(message, self._knowledge_domain_keywords) and self._contains(
             message, self._knowledge_question_keywords
         ):
-            return RouteAnalysis(intent="knowledge", entities=entities)
+            return RouteAnalysis(intent="knowledge", entities=entities, turn_type=turn_type)
         if self._contains(message, self._after_sales_keywords):
-            return RouteAnalysis(intent="after_sales", entities=entities, risk="medium")
+            missing = [] if entities.get("order_id") or context.conversation_slots.active_order_id else ["order_id"]
+            return RouteAnalysis(
+                intent="after_sales",
+                entities=entities,
+                risk="medium",
+                turn_type=turn_type,
+                missing_entities=missing,
+            )
         if self._contains(message, self._product_keywords):
-            return RouteAnalysis(intent="product", entities=entities)
+            return RouteAnalysis(intent="product", entities=entities, turn_type=turn_type)
         if entities or self._contains(message, self._order_keywords):
-            return RouteAnalysis(intent="order", entities=entities)
-        return RouteAnalysis(intent="knowledge", entities=entities)
+            return RouteAnalysis(intent="order", entities=entities, turn_type=turn_type)
+        return RouteAnalysis(intent="knowledge", entities=entities, turn_type=turn_type)
 
-    def plan(self, _message: str, route: RouteAnalysis) -> SupervisorDecision:
+    def plan(self, context: SupervisorContext) -> SupervisorDecision:
+        route = context.route
         if route.intent == "after_sales":
             return SupervisorDecision(
-                agents=["OrderAgent", "AfterSalesAgent"], action="draft_after_sales"
+                agents=["OrderAgent", "KnowledgeAgent", "AfterSalesAgent"],
+                action="draft_after_sales",
+                requires_confirmation=True,
+                planning_flags=["requires_order_fact", "requires_policy_check"],
             )
         if route.intent == "handoff":
-            return SupervisorDecision(agents=["HandoffAgent"], action="draft_handoff")
+            return SupervisorDecision(
+                agents=["HandoffAgent"], action="draft_handoff", requires_confirmation=True
+            )
         if route.intent == "product":
             return SupervisorDecision(agents=["ProductAgent"], action="read")
         if route.intent == "order":
@@ -59,6 +77,21 @@ class RulesDecisionModel:
     def _contains(message: str, keywords: tuple[str, ...]) -> bool:
         return any(keyword in message for keyword in keywords)
 
+    @staticmethod
+    def _infer_turn_type(message: str, context: RouterContext) -> str:
+        stripped = message.strip()
+        if stripped in {"确认", "可以", "提交", "提交吧", "确认提交"}:
+            return "confirmation_like"
+        if stripped in {"取消", "不用了", "先不要", "不提交"}:
+            return "rejection_like"
+        if any(marker in message for marker in ("不是", "说错", "改成")):
+            return "correction"
+        if context.conversation_slots.active_order_id and any(
+            marker in message for marker in ("那", "这个", "刚才", "它", "这单")
+        ):
+            return "follow_up"
+        return "new_request"
+
 
 class LangChainDecisionModel:
     """Structured-output adapter for a configured LangChain chat model."""
@@ -67,17 +100,17 @@ class LangChainDecisionModel:
         self._routing_model = chat_model.with_structured_output(RouteAnalysis)
         self._planning_model = chat_model.with_structured_output(SupervisorDecision)
 
-    def route(self, message: str) -> RouteAnalysis:
+    def route(self, context: RouterContext | str) -> RouteAnalysis:
+        if isinstance(context, str):
+            context = RouterContext(current_message=context)
         result = self._routing_model.invoke(
-            "分析客户消息意图、实体与风险，不选择或授权任何工具。\n"
-            f"客户消息：{message}"
+            ROUTER_PROMPT.invoke({"context_json": context.model_dump_json()})
         )
         return RouteAnalysis.model_validate(result)
 
-    def plan(self, message: str, route: RouteAnalysis) -> SupervisorDecision:
+    def plan(self, context: SupervisorContext) -> SupervisorDecision:
         result = self._planning_model.invoke(
-            "根据路由结果规划 specialist 执行顺序与动作；写动作将由系统强制确认。\n"
-            f"客户消息：{message}\n路由结果：{route.model_dump_json()}"
+            SUPERVISOR_PROMPT.invoke({"context_json": context.model_dump_json()})
         )
         return SupervisorDecision.model_validate(result)
 

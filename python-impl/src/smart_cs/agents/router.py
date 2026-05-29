@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from smart_cs.agents.state import RouteAnalysis
+from smart_cs.agents.state import RouteAnalysis, RouterContext
 
 
 class RoutingDecisionModel(Protocol):
-    def route(self, message: str) -> RouteAnalysis: ...
+    def route(self, context: RouterContext) -> RouteAnalysis: ...
 
 
 class RouterAgent:
@@ -15,5 +15,7 @@ class RouterAgent:
     def __init__(self, decision_model: RoutingDecisionModel) -> None:
         self.decision_model = decision_model
 
-    def analyze(self, message: str) -> RouteAnalysis:
-        return self.decision_model.route(message)
+    def analyze(self, context: RouterContext | str) -> RouteAnalysis:
+        if isinstance(context, str):
+            context = RouterContext(current_message=context)
+        return self.decision_model.route(context)

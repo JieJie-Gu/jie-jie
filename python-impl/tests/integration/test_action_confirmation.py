@@ -7,7 +7,8 @@ from time import sleep
 import pytest
 from sqlalchemy import select
 
-from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
+from smart_cs.agents.knowledge import Citation, KnowledgeAnswer
+from smart_cs.agents.state import RouteAnalysis, RouterContext, SupervisorDecision
 from smart_cs.application.agent_runtime import AgentRuntime
 from smart_cs.domain.errors import ConversationBusyError, ConversationLeaseLostError, ToolPermissionError
 from smart_cs.domain.enums import ActionStatus
@@ -16,6 +17,24 @@ from smart_cs.infrastructure.database import Database
 from smart_cs.infrastructure.model_factory import LangChainDecisionModel, RulesDecisionModel
 from smart_cs.infrastructure.repositories import SqlRepository
 from smart_cs.tools.executor import AuthorizedToolExecutor
+
+
+AFTER_SALES_AGENTS = ["OrderAgent", "KnowledgeAgent", "AfterSalesAgent"]
+
+
+class StaticKnowledgeAgent:
+    def answer(self, _query: str) -> KnowledgeAnswer:
+        return KnowledgeAnswer(
+            answer="根据售后政策：签收后七天内可以申请退货。",
+            contexts=["签收后七天内可以申请退货。商品应保持完好。"],
+            citations=[
+                Citation(
+                    document_id="after_sales_policy",
+                    context_id="after_sales_policy:售后政策 > 七天无理由:0",
+                    header_path="售后政策 > 七天无理由",
+                )
+            ],
+        )
 
 
 @pytest.fixture
@@ -27,6 +46,7 @@ def runtime_and_repo(tmp_path):
         executor=AuthorizedToolExecutor(repository),
         decision_model=RulesDecisionModel(),
         checkpoint_path=tmp_path / "checkpoints.db",
+        knowledge_agent=StaticKnowledgeAgent(),
     )
     try:
         yield runtime, repository
@@ -52,16 +72,17 @@ class BlockingRulesDecisionModel(RulesDecisionModel):
         self.entered = entered
         self.proceed = proceed
 
-    def route(self, message: str) -> RouteAnalysis:
+    def route(self, context: RouterContext | str) -> RouteAnalysis:
+        message = context.current_message if isinstance(context, RouterContext) else context
         if "鞋底开胶" in message:
             self.entered.set()
             if not self.proceed.wait(timeout=5):
                 raise TimeoutError("Blocked route was not released")
-        return super().route(message)
+        return super().route(context)
 
 
 class FailingRulesDecisionModel(RulesDecisionModel):
-    def route(self, _message: str) -> RouteAnalysis:
+    def route(self, _context: RouterContext | str) -> RouteAnalysis:
         raise RuntimeError("injected graph failure")
 
 
@@ -227,7 +248,7 @@ def test_replayed_specialist_node_reuses_draft_for_same_request(runtime_and_repo
     interrupted_state = runtime.graph.get_state(
         {"configurable": {"thread_id": conversation_id}}
     ).values
-    replayed = runtime._specialists_node(interrupted_state)
+    replayed = runtime._write_specialists_or_handoff_node(interrupted_state)
 
     assert replayed["pending_confirmation"]["action_id"] == pending["pending_confirmation"]["action_id"]
     assert len(actions(repository)) == 1
@@ -241,7 +262,9 @@ def test_submitted_action_is_projected_consistently_when_confirmation_node_repla
 
     pending = runtime.invoke(conversation_id, "C001", "订单 O1001 鞋底开胶，申请退款")
     action_id = pending["pending_confirmation"]["action_id"]
-    committed = runtime.executor.submit_confirmed_action(action_id, "C001")
+    committed = runtime.executor.submit_confirmed_action(
+        action_id, "C001", caller_agent="ConfirmActionNode"
+    )
 
     replayed = runtime.confirm(conversation_id, "C001", action_id, approved=True)
     repeated = runtime.confirm(conversation_id, "C001", action_id, approved=True)
@@ -341,6 +364,7 @@ def test_competing_specialist_drafts_return_canonical_pending_without_mixed_fact
             executor=AuthorizedToolExecutor(repository),
             decision_model=RulesDecisionModel(),
             checkpoint_path=tmp_path / f"concurrent-checkpoints-{position}.db",
+            knowledge_agent=StaticKnowledgeAgent(),
         )
         for position in range(2)
     ]
@@ -356,7 +380,7 @@ def test_competing_specialist_drafts_return_canonical_pending_without_mixed_fact
                         intent="after_sales", entities={"order_id": "O1001"}, risk="medium"
                     ),
                     decision=SupervisorDecision(
-                        agents=["OrderAgent", "AfterSalesAgent"],
+                        agents=AFTER_SALES_AGENTS,
                         action="draft_after_sales",
                         requires_confirmation=True,
                     ),
@@ -408,6 +432,7 @@ def test_same_runtime_rejects_overlapping_turn_before_checkpoint_state_can_mix(t
         executor=AuthorizedToolExecutor(repository),
         decision_model=BlockingRulesDecisionModel(entered, proceed),
         checkpoint_path=tmp_path / "same-runtime-checkpoints.db",
+        knowledge_agent=StaticKnowledgeAgent(),
     )
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -432,7 +457,7 @@ def test_same_runtime_rejects_overlapping_turn_before_checkpoint_state_can_mix(t
             pending["pending_confirmation"]["action_id"],
             approved=True,
         )
-        assert completed["agents_invoked"] == ["OrderAgent", "AfterSalesAgent"]
+        assert completed["agents_invoked"] == AFTER_SALES_AGENTS
     finally:
         proceed.set()
         runtime.close()
@@ -450,11 +475,13 @@ def test_shared_database_and_checkpoint_reject_overlapping_cross_runtime_turn(tm
             executor=AuthorizedToolExecutor(repository),
             decision_model=BlockingRulesDecisionModel(entered, proceed),
             checkpoint_path=checkpoint_path,
+            knowledge_agent=StaticKnowledgeAgent(),
         ),
         AgentRuntime(
             executor=AuthorizedToolExecutor(repository),
             decision_model=RulesDecisionModel(),
             checkpoint_path=checkpoint_path,
+            knowledge_agent=StaticKnowledgeAgent(),
         ),
     ]
     try:
@@ -480,7 +507,7 @@ def test_shared_database_and_checkpoint_reject_overlapping_cross_runtime_turn(tm
             pending["pending_confirmation"]["action_id"],
             approved=True,
         )
-        assert completed["agents_invoked"] == ["OrderAgent", "AfterSalesAgent"]
+        assert completed["agents_invoked"] == AFTER_SALES_AGENTS
     finally:
         proceed.set()
         for runtime in runtimes:
@@ -555,6 +582,7 @@ def test_heartbeat_keeps_long_running_shared_thread_turn_exclusive(tmp_path) -> 
             checkpoint_path=checkpoint_path,
             turn_lease_ttl_seconds=0.5,
             turn_lease_renew_interval_seconds=0.1,
+            knowledge_agent=StaticKnowledgeAgent(),
         ),
         AgentRuntime(
             executor=AuthorizedToolExecutor(second_repository),
@@ -562,6 +590,7 @@ def test_heartbeat_keeps_long_running_shared_thread_turn_exclusive(tmp_path) -> 
             checkpoint_path=checkpoint_path,
             turn_lease_ttl_seconds=0.5,
             turn_lease_renew_interval_seconds=0.1,
+            knowledge_agent=StaticKnowledgeAgent(),
         ),
     ]
     try:
@@ -587,7 +616,7 @@ def test_heartbeat_keeps_long_running_shared_thread_turn_exclusive(tmp_path) -> 
             pending["pending_confirmation"]["action_id"],
             approved=True,
         )
-        assert completed["agents_invoked"] == ["OrderAgent", "AfterSalesAgent"]
+        assert completed["agents_invoked"] == AFTER_SALES_AGENTS
     finally:
         proceed.set()
         for runtime in runtimes:
@@ -607,6 +636,7 @@ def test_turn_that_loses_lease_token_aborts_without_returning_success(tmp_path) 
         checkpoint_path=tmp_path / "lost-lease-checkpoints.db",
         turn_lease_ttl_seconds=1,
         turn_lease_renew_interval_seconds=0.05,
+        knowledge_agent=StaticKnowledgeAgent(),
     )
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -645,6 +675,7 @@ def test_low_confidence_image_conversion_failure_preserves_after_sales_action(tm
         executor=AuthorizedToolExecutor(repository),
         decision_model=RulesDecisionModel(),
         checkpoint_path=tmp_path / "image-conversion-checkpoints.db",
+        knowledge_agent=StaticKnowledgeAgent(),
     )
     try:
         with pytest.raises(RuntimeError, match="handoff failure"):
@@ -683,6 +714,7 @@ def test_close_waits_for_active_turn_and_returns_without_heartbeat_threads(tmp_p
         checkpoint_path=tmp_path / "close-heartbeat-checkpoints.db",
         turn_lease_ttl_seconds=1,
         turn_lease_renew_interval_seconds=0.05,
+        knowledge_agent=StaticKnowledgeAgent(),
     )
     closed = False
     try:
@@ -722,6 +754,7 @@ def test_lost_lease_at_draft_write_boundary_rolls_back_pending_action(tmp_path) 
         executor=executor,
         decision_model=RulesDecisionModel(),
         checkpoint_path=tmp_path / "fenced-draft-checkpoints.db",
+        knowledge_agent=StaticKnowledgeAgent(),
     )
     try:
         with pytest.raises(ConversationLeaseLostError, match="lease"):

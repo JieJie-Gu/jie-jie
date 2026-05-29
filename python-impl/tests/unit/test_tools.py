@@ -33,7 +33,11 @@ def test_order_lookup_rejects_another_customer_and_audits_rejection(repo) -> Non
     tools = AuthorizedToolExecutor(repo)
 
     with pytest.raises(ToolPermissionError):
-        tools.invoke("lookup_order", {"customer_id": "C002", "order_id": "O1001"})
+        tools.invoke(
+            "lookup_order",
+            {"customer_id": "C002", "order_id": "O1001"},
+            caller_agent="OrderAgent",
+        )
 
     calls = repo.list_tool_calls()
     assert calls[-1].tool_name == "lookup_order"
@@ -46,6 +50,7 @@ def test_after_sales_only_creates_draft_before_confirmation(repo) -> None:
     result = tools.invoke(
         "draft_after_sales",
         {"customer_id": "C001", "order_id": "O1001", "reason": "鞋底开胶"},
+        caller_agent="AfterSalesAgent",
     )
 
     assert result["status"] == "pending_confirmation"
@@ -56,7 +61,11 @@ def test_after_sales_only_creates_draft_before_confirmation(repo) -> None:
 def test_handoff_is_a_draft_until_confirmed(repo) -> None:
     tools = AuthorizedToolExecutor(repo)
 
-    result = tools.invoke("draft_handoff", {"customer_id": "C001", "reason": "需要人工沟通"})
+    result = tools.invoke(
+        "draft_handoff",
+        {"customer_id": "C001", "reason": "需要人工沟通"},
+        caller_agent="HandoffAgent",
+    )
 
     assert result["status"] == "pending_confirmation"
     assert result["action_type"] == "handoff"
@@ -72,8 +81,8 @@ def test_replayed_draft_with_same_idempotency_key_reuses_pending_action(repo) ->
         "idempotency_key": "request-draft-replay",
     }
 
-    first = tools.invoke("draft_after_sales", arguments)
-    repeated = tools.invoke("draft_after_sales", arguments)
+    first = tools.invoke("draft_after_sales", arguments, caller_agent="AfterSalesAgent")
+    repeated = tools.invoke("draft_after_sales", arguments, caller_agent="AfterSalesAgent")
 
     with repo.database.session() as session:
         drafts = list(session.scalars(select(PendingAction)))
@@ -116,10 +125,15 @@ def test_idempotency_key_rejects_different_action_payload(repo, tool_name, argum
             "reason": "鞋底开胶",
             "idempotency_key": "immutable-operation",
         },
+        caller_agent="AfterSalesAgent",
     )
 
     with pytest.raises(InvalidActionState, match="Idempotency key"):
-        tools.invoke(tool_name, {**arguments, "idempotency_key": "immutable-operation"})
+        tools.invoke(
+            tool_name,
+            {**arguments, "idempotency_key": "immutable-operation"},
+            caller_agent="AfterSalesAgent" if tool_name == "draft_after_sales" else "HandoffAgent",
+        )
 
 
 def test_idempotency_key_does_not_expose_another_customers_draft(repo) -> None:
@@ -127,12 +141,14 @@ def test_idempotency_key_does_not_expose_another_customers_draft(repo) -> None:
     tools.invoke(
         "draft_handoff",
         {"customer_id": "C001", "reason": "需要人工沟通", "idempotency_key": "private-request"},
+        caller_agent="HandoffAgent",
     )
 
     with pytest.raises(ToolPermissionError):
         tools.invoke(
             "draft_handoff",
             {"customer_id": "C002", "reason": "其他请求", "idempotency_key": "private-request"},
+            caller_agent="HandoffAgent",
         )
 
 
@@ -149,6 +165,7 @@ def test_conversation_scoped_draft_requires_bound_owner(repo) -> None:
                 "conversation_id": "owned-conversation",
                 "idempotency_key": "wrong-owner-request",
             },
+            caller_agent="HandoffAgent",
         )
 
 
@@ -180,10 +197,15 @@ def test_submit_confirmed_action_is_idempotent(repo) -> None:
     draft = tools.invoke(
         "draft_after_sales",
         {"customer_id": "C001", "order_id": "O1001", "reason": "鞋底开胶"},
+        caller_agent="AfterSalesAgent",
     )
 
-    submitted = tools.submit_confirmed_action(draft["action_id"], "C001")
-    repeated = tools.submit_confirmed_action(draft["action_id"], "C001")
+    submitted = tools.submit_confirmed_action(
+        draft["action_id"], "C001", caller_agent="ConfirmActionNode"
+    )
+    repeated = tools.submit_confirmed_action(
+        draft["action_id"], "C001", caller_agent="ConfirmActionNode"
+    )
 
     assert submitted["status"] == "submitted"
     assert submitted["ticket_id"] == repeated["ticket_id"]
@@ -192,22 +214,36 @@ def test_submit_confirmed_action_is_idempotent(repo) -> None:
 
 def test_cancelled_action_cannot_be_submitted(repo) -> None:
     tools = AuthorizedToolExecutor(repo)
-    draft = tools.invoke("draft_handoff", {"customer_id": "C001", "reason": "不再需要"})
+    draft = tools.invoke(
+        "draft_handoff",
+        {"customer_id": "C001", "reason": "不再需要"},
+        caller_agent="HandoffAgent",
+    )
 
-    cancelled = tools.cancel_pending_action(draft["action_id"], "C001")
+    cancelled = tools.cancel_pending_action(
+        draft["action_id"], "C001", caller_agent="ConfirmActionNode"
+    )
 
     assert cancelled["status"] == "cancelled"
     assert repo.list_tickets("C001") == []
     with pytest.raises(InvalidActionState):
-        tools.submit_confirmed_action(draft["action_id"], "C001")
+        tools.submit_confirmed_action(
+            draft["action_id"], "C001", caller_agent="ConfirmActionNode"
+        )
 
 
 def test_another_customer_cannot_submit_a_pending_action(repo) -> None:
     tools = AuthorizedToolExecutor(repo)
-    draft = tools.invoke("draft_handoff", {"customer_id": "C001", "reason": "需要人工沟通"})
+    draft = tools.invoke(
+        "draft_handoff",
+        {"customer_id": "C001", "reason": "需要人工沟通"},
+        caller_agent="HandoffAgent",
+    )
 
     with pytest.raises(ToolPermissionError):
-        tools.submit_confirmed_action(draft["action_id"], "C002")
+        tools.submit_confirmed_action(
+            draft["action_id"], "C002", caller_agent="ConfirmActionNode"
+        )
 
     assert repo.list_tickets("C001") == []
     assert repo.list_tool_calls()[-1].status == "rejected"
@@ -215,18 +251,34 @@ def test_another_customer_cannot_submit_a_pending_action(repo) -> None:
 
 def test_cancel_is_idempotent_and_submitted_action_cannot_be_cancelled(repo) -> None:
     tools = AuthorizedToolExecutor(repo)
-    cancelled_draft = tools.invoke("draft_handoff", {"customer_id": "C001", "reason": "不再需要"})
+    cancelled_draft = tools.invoke(
+        "draft_handoff",
+        {"customer_id": "C001", "reason": "不再需要"},
+        caller_agent="HandoffAgent",
+    )
 
-    first_cancel = tools.cancel_pending_action(cancelled_draft["action_id"], "C001")
-    repeated_cancel = tools.cancel_pending_action(cancelled_draft["action_id"], "C001")
+    first_cancel = tools.cancel_pending_action(
+        cancelled_draft["action_id"], "C001", caller_agent="ConfirmActionNode"
+    )
+    repeated_cancel = tools.cancel_pending_action(
+        cancelled_draft["action_id"], "C001", caller_agent="ConfirmActionNode"
+    )
 
     assert first_cancel["status"] == "cancelled"
     assert repeated_cancel["status"] == "cancelled"
 
-    submitted_draft = tools.invoke("draft_handoff", {"customer_id": "C001", "reason": "转接人工"})
-    tools.submit_confirmed_action(submitted_draft["action_id"], "C001")
+    submitted_draft = tools.invoke(
+        "draft_handoff",
+        {"customer_id": "C001", "reason": "转接人工"},
+        caller_agent="HandoffAgent",
+    )
+    tools.submit_confirmed_action(
+        submitted_draft["action_id"], "C001", caller_agent="ConfirmActionNode"
+    )
     with pytest.raises(InvalidActionState):
-        tools.cancel_pending_action(submitted_draft["action_id"], "C001")
+        tools.cancel_pending_action(
+            submitted_draft["action_id"], "C001", caller_agent="ConfirmActionNode"
+        )
 
 
 def test_successful_write_rolls_back_when_success_audit_cannot_be_saved(tmp_path) -> None:
@@ -246,7 +298,9 @@ def test_successful_write_rolls_back_when_success_audit_cannot_be_saved(tmp_path
 
     with pytest.raises(InjectedAuditFailure):
         AuthorizedToolExecutor(repository).invoke(
-            "draft_handoff", {"customer_id": "C001", "reason": "需要人工沟通"}
+            "draft_handoff",
+            {"customer_id": "C001", "reason": "需要人工沟通"},
+            caller_agent="HandoffAgent",
         )
 
     with database.session() as session:
@@ -257,7 +311,11 @@ def test_successful_write_rolls_back_when_success_audit_cannot_be_saved(tmp_path
 
 def test_competing_submit_and_cancel_cannot_create_conflicting_terminal_state(repo) -> None:
     tools = AuthorizedToolExecutor(repo)
-    draft = tools.invoke("draft_handoff", {"customer_id": "C001", "reason": "并发终态校验"})
+    draft = tools.invoke(
+        "draft_handoff",
+        {"customer_id": "C001", "reason": "并发终态校验"},
+        caller_agent="HandoffAgent",
+    )
     transition_barrier = Barrier(2)
 
     def synchronize_updates(_conn, _cursor, statement, _parameters, _context, _executemany):
@@ -269,8 +327,18 @@ def test_competing_submit_and_cancel_cannot_create_conflicting_terminal_state(re
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [
-                pool.submit(tools.submit_confirmed_action, draft["action_id"], "C001"),
-                pool.submit(tools.cancel_pending_action, draft["action_id"], "C001"),
+                pool.submit(
+                    tools.submit_confirmed_action,
+                    draft["action_id"],
+                    "C001",
+                    caller_agent="ConfirmActionNode",
+                ),
+                pool.submit(
+                    tools.cancel_pending_action,
+                    draft["action_id"],
+                    "C001",
+                    caller_agent="ConfirmActionNode",
+                ),
             ]
             for future in futures:
                 try:
@@ -309,7 +377,7 @@ def test_sqlite_enforces_pending_action_foreign_keys(repo, customer_id, order_id
 def test_search_products_returns_customer_visible_product(repo) -> None:
     tools = AuthorizedToolExecutor(repo)
 
-    result = tools.invoke("search_products", {"query": "跑鞋"})
+    result = tools.invoke("search_products", {"query": "跑鞋"}, caller_agent="ProductAgent")
 
     assert result["products"][0]["name"] == "轻量跑鞋"
 

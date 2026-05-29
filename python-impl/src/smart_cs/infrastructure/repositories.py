@@ -21,8 +21,10 @@ from smart_cs.domain.models import (
     AgentRun,
     Base,
     Conversation,
+    ConversationSummary,
     Customer,
     Message,
+    MemoryRecord,
     Order,
     PendingAction,
     Product,
@@ -472,6 +474,106 @@ class SqlRepository:
             managed_session.add(call)
             managed_session.flush()
         return call
+
+    def upsert_conversation_summary(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        summary: str,
+        *,
+        open_items: dict[str, Any] | None = None,
+        last_intent: str | None = None,
+        last_entities: dict[str, str] | None = None,
+    ) -> ConversationSummary:
+        with self.transaction() as session:
+            self._require_conversation_owner(session, conversation_id, customer_id)
+            row = session.get(ConversationSummary, conversation_id)
+            if row is None:
+                row = ConversationSummary(
+                    conversation_id=conversation_id,
+                    customer_id=customer_id,
+                    summary=summary,
+                    open_items=open_items or {},
+                    last_intent=last_intent,
+                    last_entities=last_entities or {},
+                )
+                session.add(row)
+            else:
+                row.summary = summary
+                row.open_items = open_items or {}
+                row.last_intent = last_intent
+                row.last_entities = last_entities or {}
+            session.flush()
+            return row
+
+    def get_conversation_summary(
+        self, conversation_id: str, customer_id: str
+    ) -> ConversationSummary | None:
+        with self.transaction() as session:
+            self._require_conversation_owner(session, conversation_id, customer_id)
+            return session.get(ConversationSummary, conversation_id)
+
+    def put_memory(
+        self,
+        namespace: tuple[str, str, str],
+        key: str,
+        value: dict[str, Any],
+        *,
+        scope: str,
+        owner_id: str,
+        memory_type: str,
+        source: str,
+        confidence: str,
+        risk_level: str,
+        created_by: str,
+    ) -> MemoryRecord:
+        namespace_text = "/".join(namespace)
+        memory_id = f"{namespace_text}:{key}"
+        with self.transaction() as session:
+            row = session.get(MemoryRecord, memory_id)
+            if row is None:
+                row = MemoryRecord(
+                    id=memory_id,
+                    namespace=namespace_text,
+                    scope=scope,
+                    owner_id=owner_id,
+                    memory_type=memory_type,
+                    key=key,
+                    title=str(value.get("title", key)),
+                    description=str(value.get("description", "")),
+                    value_json=value,
+                    evidence_json=list(value.get("evidence", [])),
+                    source=source,
+                    confidence=confidence,
+                    risk_level=risk_level,
+                    review_status=str(value.get("review_status", "pending")),
+                    created_by=created_by,
+                )
+                session.add(row)
+            else:
+                row.title = str(value.get("title", key))
+                row.description = str(value.get("description", ""))
+                row.value_json = value
+                row.evidence_json = list(value.get("evidence", []))
+                row.confidence = confidence
+                row.risk_level = risk_level
+                row.source = source
+                row.review_status = str(value.get("review_status", "pending"))
+            session.flush()
+            return row
+
+    def search_memories(
+        self, namespace: tuple[str, str, str], query: str, limit: int
+    ) -> list[MemoryRecord]:
+        namespace_text = "/".join(namespace)
+        with self.transaction() as session:
+            statement = (
+                select(MemoryRecord)
+                .where(MemoryRecord.namespace == namespace_text)
+                .order_by(MemoryRecord.updated_at.desc(), MemoryRecord.id.desc())
+                .limit(limit)
+            )
+            return list(session.scalars(statement))
 
     @staticmethod
     def _claim_conversation(session: Session, conversation_id: str, customer_id: str) -> Conversation:

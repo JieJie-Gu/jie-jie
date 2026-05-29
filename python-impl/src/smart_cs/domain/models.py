@@ -143,3 +143,51 @@ class ToolCall(Base):
     error_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ConversationSummary(Base):
+    __tablename__ = "conversation_summaries"
+
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id"), primary_key=True
+    )
+    customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), nullable=False, index=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    open_items: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    last_intent: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_entities: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class MemoryRecord(Base):
+    __tablename__ = "memory_records"
+    __table_args__ = (
+        Index("ix_memory_records_namespace", "namespace"),
+        Index("ix_memory_records_owner_type", "scope", "owner_id", "memory_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(255), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    value_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    evidence_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    review_status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )

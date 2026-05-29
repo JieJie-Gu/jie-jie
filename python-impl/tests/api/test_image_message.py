@@ -8,6 +8,7 @@ from smart_cs.domain.evidence import VisualEvidence
 from smart_cs.infrastructure.assets import LocalAssetStorage
 from smart_cs.infrastructure.model_factory import RulesDecisionModel
 from smart_cs.main import create_app
+from tests.api.support import StaticKnowledgeAgent
 
 
 class ClearDamageModel:
@@ -98,10 +99,12 @@ def make_client(tmp_path, model) -> TestClient:
         database_url=f"sqlite:///{tmp_path / 'api.db'}",
         checkpoint_path=tmp_path / "checkpoints.db",
         model_mode="rules",
+        rag_enabled=False,
     )
     return TestClient(
         create_app(
             settings,
+            knowledge_agent=StaticKnowledgeAgent(),
             vision_agent=VisionAgent(model),
             asset_storage=LocalAssetStorage(tmp_path / "assets"),
         )

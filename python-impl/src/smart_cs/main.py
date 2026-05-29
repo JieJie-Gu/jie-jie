@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -14,6 +15,7 @@ from smart_cs.agents.knowledge import KnowledgeAgent
 from smart_cs.agents.vision import LangChainVisionModel, RulesVisionModel, VisionAgent
 from smart_cs.application.agent_runtime import AgentRuntime
 from smart_cs.application.conversation_service import ConversationService
+from smart_cs.application.memory import MemoryWriteback
 from smart_cs.config import Settings
 from smart_cs.domain.errors import (
     ConversationBusyError,
@@ -41,6 +43,33 @@ class RuntimeBundle:
     runtime: AgentRuntime
 
 
+class LazyKnowledgeAgent:
+    """Defer heavy RAG setup until the first knowledge request."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._lock = Lock()
+        self._agent: KnowledgeAgent | None = None
+
+    def answer(self, query: str):
+        return self._get_agent().answer(query)
+
+    def _get_agent(self) -> KnowledgeAgent:
+        if self._agent is None:
+            with self._lock:
+                if self._agent is None:
+                    from smart_cs.rag.embeddings import LocalSentenceEmbeddings
+                    from smart_cs.rag.retrieval import RuleBasedQueryRewriter
+                    from smart_cs.rag.vector_store import connect_hybrid_store
+
+                    embeddings = LocalSentenceEmbeddings(self._settings.embedding_model)
+                    self._agent = KnowledgeAgent(
+                        connect_hybrid_store(self._settings, embeddings),
+                        RuleBasedQueryRewriter(),
+                    )
+        return self._agent
+
+
 def build_runtime(
     settings: Settings, knowledge_agent: KnowledgeAgent | None = None
 ) -> RuntimeBundle:
@@ -60,17 +89,9 @@ def build_runtime(
     else:
         decision_model = LangChainDecisionModel(configured_chat_model(settings))
 
-    # 如果调用方没有注入 KnowledgeAgent，并且启用了 RAG，就连接 Milvus 并创建知识问答 Agent。
+    # 如果调用方没有注入 KnowledgeAgent，并且启用了 RAG，就延迟创建知识问答 Agent。
     if knowledge_agent is None and settings.rag_enabled:
-        from smart_cs.rag.embeddings import LocalSentenceEmbeddings
-        from smart_cs.rag.retrieval import RuleBasedQueryRewriter
-        from smart_cs.rag.vector_store import connect_hybrid_store
-
-        # 文本 embedding 用于把用户问题和 Markdown 知识块映射到向量空间。
-        embeddings = LocalSentenceEmbeddings(settings.embedding_model)
-        knowledge_agent = KnowledgeAgent(
-            connect_hybrid_store(settings, embeddings), RuleBasedQueryRewriter()
-        )
+        knowledge_agent = LazyKnowledgeAgent(settings)
 
     # 组装多 Agent 运行时：工具执行器负责受控业务操作，decision_model 负责路由和规划。
     runtime = AgentRuntime(
@@ -78,6 +99,7 @@ def build_runtime(
         decision_model=decision_model,
         checkpoint_path=settings.checkpoint_path,
         knowledge_agent=knowledge_agent,
+        memory_writeback=MemoryWriteback(repository=repository),
     )
 
     # 返回统一资源包，供 FastAPI app 生命周期持有并在关闭时清理。

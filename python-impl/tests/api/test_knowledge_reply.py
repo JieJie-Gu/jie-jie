@@ -30,6 +30,7 @@ def test_knowledge_reply_contains_cited_window_without_creating_action(tmp_path)
         database_url=f"sqlite:///{tmp_path / 'api.db'}",
         checkpoint_path=tmp_path / "checkpoints.db",
         model_mode="rules",
+        rag_enabled=False,
     )
     knowledge_agent = KnowledgeAgent(FakeKnowledgeStore(), RuleBasedQueryRewriter())
 

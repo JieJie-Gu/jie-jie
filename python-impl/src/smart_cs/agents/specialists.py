@@ -8,6 +8,10 @@ from smart_cs.agents.state import RouteAnalysis, SupervisorDecision
 from smart_cs.tools.executor import AuthorizedToolExecutor, TurnFence
 
 
+READ_AGENTS = {"ProductAgent", "OrderAgent", "KnowledgeAgent", "VisionAgent"}
+WRITE_AGENTS = {"AfterSalesAgent", "HandoffAgent"}
+
+
 @dataclass(frozen=True)
 class SpecialistExecution:
     agents_invoked: list[str]
@@ -81,6 +85,32 @@ class SpecialistDispatcher:
             pending_confirmation=pending_confirmation,
         )
 
+    def execute_read_agents(self, **kwargs: Any) -> SpecialistExecution:
+        decision = kwargs["decision"]
+        read_agents = [agent for agent in decision.agents if agent in READ_AGENTS]
+        if not read_agents:
+            return SpecialistExecution(
+                agents_invoked=[],
+                results=[],
+                result={"status": "no_read"},
+                pending_confirmation=None,
+            )
+        read_decision = decision.model_copy(update={"agents": read_agents, "action": "read"})
+        return self.execute(**{**kwargs, "decision": read_decision})
+
+    def execute_write_agents(self, **kwargs: Any) -> SpecialistExecution:
+        decision = kwargs["decision"]
+        write_agents = [agent for agent in decision.agents if agent in WRITE_AGENTS]
+        if not write_agents:
+            return SpecialistExecution(
+                agents_invoked=[],
+                results=[],
+                result={"status": "no_write"},
+                pending_confirmation=None,
+            )
+        write_decision = decision.model_copy(update={"agents": write_agents})
+        return self.execute(**{**kwargs, "decision": write_decision})
+
     def _product(
         self,
         message: str,
@@ -95,7 +125,7 @@ class SpecialistDispatcher:
         arguments = {"query": message}
         if conversation_id is not None:
             arguments["conversation_id"] = conversation_id
-        return self.executor.invoke("search_products", arguments)
+        return self.executor.invoke("search_products", arguments, caller_agent="ProductAgent")
 
     def _order(
         self,
@@ -114,7 +144,7 @@ class SpecialistDispatcher:
         arguments = {"customer_id": customer_id, "order_id": order_id}
         if conversation_id is not None:
             arguments["conversation_id"] = conversation_id
-        return self.executor.invoke("lookup_order", arguments)
+        return self.executor.invoke("lookup_order", arguments, caller_agent="OrderAgent")
 
     def _knowledge(
         self,
@@ -171,6 +201,7 @@ class SpecialistDispatcher:
         return self.executor.invoke(
             "draft_after_sales",
             arguments,
+            caller_agent="AfterSalesAgent",
             turn_fence=turn_fence,
         )
 
@@ -188,7 +219,10 @@ class SpecialistDispatcher:
         arguments: dict[str, Any] = {"customer_id": customer_id, "reason": message}
         self._add_request_identity(arguments, conversation_id, idempotency_key)
         return self.executor.invoke(
-            "draft_handoff", arguments, turn_fence=turn_fence
+            "draft_handoff",
+            arguments,
+            caller_agent="HandoffAgent",
+            turn_fence=turn_fence,
         )
 
     @staticmethod
