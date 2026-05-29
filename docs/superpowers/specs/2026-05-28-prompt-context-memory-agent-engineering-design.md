@@ -13,6 +13,14 @@
 - `KnowledgeAgent` 使用 Milvus/RAG 返回带引用的知识回答。
 - 售后图片链路已有 `VisualEvidence`、`VisionAgent` 和图片证据可用性判断。
 
+当前 sub-agent-as-tool 架构中，`VisionAgent` 保留为图片证据预处理 Agent：
+
+- 它运行在 `ConversationService.send_message_with_image()` 的前置链路。
+- 它只输出结构化 `VisualEvidence`，不参与 supervisor handoff，不作为 worker agent 暴露给 Supervisor。
+- 它不直接创建售后、退款、赔付或人工接管动作。
+- `VisualEvidence` 会进入 `PostSalesAgent` 上下文和 `PolicyEngine`，由工具层继续强制校验图片证据是否可支持售后草稿。
+- 每次图片证据解析必须记录 `vision_evidence` ToolCall 审计。
+
 当前主要缺口是：
 
 - `RouterAgent` 和 `SupervisorAgent` 主要只基于当前 `message` 做判断，缺少工程化上下文投影。
@@ -203,7 +211,7 @@ Specialist Layer
   ProductAgent
   OrderAgent
   KnowledgeAgent
-  VisionAgent
+  VisionAgent  # 图片证据预处理 Agent，不是 supervisor worker / handoff worker
   AfterSalesAgent
   HandoffAgent
 

@@ -32,7 +32,12 @@ def make_post_sales_tool(post_sales_agent: Any):
         complaints, after-sales requests, and human handoff.
         """
 
-        prompt = _subagent_prompt(runtime, request, agent_label="售后")
+        prompt = _subagent_prompt(
+            runtime,
+            request,
+            agent_label="售后",
+            include_visual_context=True,
+        )
         result = post_sales_agent.invoke(
             {"messages": [{"role": "user", "content": prompt}]},
             config=runtime.config,
@@ -42,14 +47,51 @@ def make_post_sales_tool(post_sales_agent: Any):
     return use_post_sales_agent
 
 
-def _subagent_prompt(runtime: ToolRuntime, request: str, *, agent_label: str) -> str:
+def _subagent_prompt(
+    runtime: ToolRuntime,
+    request: str,
+    *,
+    agent_label: str,
+    include_visual_context: bool = False,
+) -> str:
     original = _latest_human_text(runtime.state.get("messages", []))
+    visual_context = (
+        _visual_context_block(runtime.state)
+        if include_visual_context
+        else ""
+    )
     return (
         "你正在处理以下用户客服请求：\n\n"
         f"{original}\n\n"
+        f"{visual_context}"
         f"你被分配的{agent_label}子任务是：\n\n"
         f"{request}"
     )
+
+
+def _visual_context_block(state: dict[str, Any]) -> str:
+    evidence = state.get("visual_evidence")
+    if not isinstance(evidence, dict):
+        return ""
+    confidence = _float_or_zero(evidence.get("confidence"))
+    needs_clarification = bool(evidence.get("needs_clarification"))
+    usable_for_draft = confidence >= 0.8 and not needs_clarification
+    summary = str(evidence.get("summary") or "")
+    return (
+        "图片证据上下文：\n"
+        f"- summary: {summary}\n"
+        f"- confidence: {confidence}\n"
+        f"- usable_for_draft: {str(usable_for_draft).lower()}\n"
+        f"- needs_clarification: {str(needs_clarification).lower()}\n"
+        f"- asset_key: {state.get('asset_key') or ''}\n\n"
+    )
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _latest_human_text(messages: list[Any]) -> str:

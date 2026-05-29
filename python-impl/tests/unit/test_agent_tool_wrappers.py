@@ -30,13 +30,17 @@ def executor(repo):
     return AuthorizedToolExecutor(repo)
 
 
-def context(executor: AuthorizedToolExecutor) -> RuntimeToolContext:
+def context(
+    executor: AuthorizedToolExecutor,
+    visual_evidence: dict | None = None,
+) -> RuntimeToolContext:
     executor.claim_conversation("conv-1", "C001")
     return RuntimeToolContext(
         conversation_id="conv-1",
         customer_id="C001",
         request_id="req-1",
         turn_fence=None,
+        visual_evidence=visual_evidence,
     )
 
 
@@ -93,3 +97,56 @@ def test_lookup_order_policy_blocks_presales_agent(executor) -> None:
             {"customer_id": "C001", "order_id": "O1001"},
             caller_agent="PreSalesAgent",
         )
+
+
+def test_low_confidence_visual_evidence_routes_to_handoff(executor, repo) -> None:
+    ctx = context(
+        executor,
+        {
+            "summary": "图片模糊，无法确认鞋底问题",
+            "confidence": 0.42,
+            "needs_clarification": True,
+        },
+    )
+
+    result = draft_after_sales_action(
+        executor,
+        StaticKnowledgeAgent(),
+        PolicyEngine(),
+        ctx,
+        order_id="O1001",
+        reason="鞋底开胶",
+    )
+
+    assert result["status"] == "pending_confirmation"
+    assert result["action_type"] == "handoff"
+    assert any(call.tool_name == "draft_handoff" for call in repo.list_tool_calls("C001"))
+
+
+def test_unusable_visual_evidence_does_not_create_after_sales_draft(executor, repo) -> None:
+    ctx = context(
+        executor,
+        {
+            "summary": "图片需要补充证据",
+            "confidence": 0.9,
+            "needs_clarification": True,
+        },
+    )
+
+    result = draft_after_sales_action(
+        executor,
+        StaticKnowledgeAgent(),
+        PolicyEngine(),
+        ctx,
+        order_id="O1001",
+        reason="鞋底开胶",
+    )
+
+    assert result["action_type"] == "handoff"
+    assert repo.list_tickets("C001") == []
+    successful_after_sales_drafts = [
+        call
+        for call in repo.list_tool_calls("C001")
+        if call.tool_name == "draft_after_sales" and call.status == "succeeded"
+    ]
+    assert successful_after_sales_drafts == []

@@ -59,6 +59,8 @@ POST_SALES_AGENT_PROMPT = """
 - 售后类请求必须先查订单，再查售后政策 knowledge_rag。
 - 只有在政策允许时，才能调用 request_after_sales。
 - 图片证据不可靠、政策不明确、高风险或投诉场景，调用 request_handoff。
+- 如果图片证据上下文中 usable_for_draft=false，不得调用 request_after_sales，应调用 request_handoff 或要求用户补充证据。
+- 不得把低置信度、模糊或 needs_clarification=true 的图片描述成“已确认质量问题”。
 - request_after_sales 和 request_handoff 会触发用户确认，不代表已经提交。
 - pending 状态只能说“已生成草稿，等待确认”。
 - 不允许承诺退款成功、退货成功、补偿成功。

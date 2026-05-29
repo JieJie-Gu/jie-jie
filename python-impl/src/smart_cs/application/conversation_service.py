@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import base64
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
 from smart_cs.agents.vision import VisionAgent
 from smart_cs.application.agent_runtime import AgentRuntime
+from smart_cs.domain.enums import ToolCallStatus
 from smart_cs.domain.errors import ToolPermissionError
 from smart_cs.domain.models import AgentRun, ToolCall
 from smart_cs.infrastructure.assets import LocalAssetStorage
@@ -72,8 +74,34 @@ class ConversationService:
             raise ValueError("Image evidence processing is not configured")
         asset_key = self.asset_storage.save(conversation_id, filename, content_type, content)
         encoded_image = base64.b64encode(content).decode("ascii")
-        evidence = self.vision_agent.inspect(
-            f"data:{content_type};base64,{encoded_image}", message
+        vision_arguments = {
+            "conversation_id": conversation_id,
+            "customer_id": customer_id,
+            "asset_key": asset_key,
+            "content_type": content_type,
+        }
+        vision_started = perf_counter()
+        try:
+            evidence = self.vision_agent.inspect(
+                f"data:{content_type};base64,{encoded_image}", message
+            )
+        except Exception as error:
+            self.repository.record_tool_call(
+                tool_name="vision_evidence",
+                arguments=vision_arguments,
+                customer_id=customer_id,
+                status=ToolCallStatus.REJECTED.value,
+                error_type=type(error).__name__,
+                duration_ms=self._duration_ms(vision_started),
+            )
+            raise
+        self.repository.record_tool_call(
+            tool_name="vision_evidence",
+            arguments=vision_arguments,
+            customer_id=customer_id,
+            status=ToolCallStatus.SUCCEEDED.value,
+            result=evidence.model_dump(),
+            duration_ms=self._duration_ms(vision_started),
         )
         self.repository.record_message(
             conversation_id,
@@ -218,3 +246,7 @@ class ConversationService:
             "reply": run.reply,
             "created_at": run.created_at,
         }
+
+    @staticmethod
+    def _duration_ms(started: float) -> int:
+        return max(0, round((perf_counter() - started) * 1000))

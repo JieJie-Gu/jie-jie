@@ -16,6 +16,7 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
 from smart_cs.agents.knowledge import KnowledgeAgent
+from smart_cs.agents.state import RuntimeState
 from smart_cs.agents.subagents import create_post_sales_agent, create_pre_sales_agent
 from smart_cs.application.memory import MemoryWriteback, SqlMemoryStoreAdapter
 from smart_cs.application.policy import PolicyEngine
@@ -196,7 +197,16 @@ class AgentRuntime:
             )
             with self._tool_context(ctx):
                 graph_result = self.graph.invoke(
-                    {"messages": [human_message]},
+                    {
+                        "messages": [human_message],
+                        "conversation_id": conversation_id,
+                        "customer_id": customer_id,
+                        "request_id": request_id,
+                        "message": message,
+                        "has_image": visual_evidence is not None,
+                        "visual_evidence": visual_evidence,
+                        "asset_key": asset_key,
+                    },
                     config=self._config(conversation_id),
                 )
 
@@ -333,6 +343,7 @@ class AgentRuntime:
                 make_post_sales_tool(post_sales_agent),
             ],
             system_prompt=CUSTOMER_SERVICE_SUPERVISOR_PROMPT,
+            state_schema=RuntimeState,
             checkpointer=self._checkpointer,
             store=self._graph_store,
             name="customer_service_supervisor",

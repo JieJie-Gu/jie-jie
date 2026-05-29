@@ -35,7 +35,7 @@ class PolicyEngine:
                 explanation="需要先检索售后政策依据，才能创建售后草稿。",
                 next_action="explain",
             )
-        if visual_evidence is not None and visual_evidence.get("usable_for_draft") is False:
+        if visual_evidence is not None and self._visual_evidence_usable(visual_evidence) is False:
             return PolicyDecision(
                 eligible=False,
                 reason_code="VISUAL_EVIDENCE_UNCERTAIN",
@@ -56,3 +56,15 @@ class PolicyEngine:
             explanation="当前订单状态暂不满足创建售后草稿条件。",
             next_action="explain",
         )
+
+    @staticmethod
+    def _visual_evidence_usable(visual_evidence: dict[str, Any]) -> bool | None:
+        if "usable_for_draft" in visual_evidence:
+            return bool(visual_evidence["usable_for_draft"])
+        if "confidence" not in visual_evidence and "needs_clarification" not in visual_evidence:
+            return None
+        try:
+            confidence = float(visual_evidence.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return confidence >= 0.8 and not bool(visual_evidence.get("needs_clarification"))

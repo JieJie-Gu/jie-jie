@@ -10,6 +10,19 @@ class FakeRuntime:
     config = {"configurable": {"thread_id": "conv-1"}}
 
 
+class FakeRuntimeWithVisual:
+    state = {
+        "messages": [HumanMessage(content="订单 O1001 鞋底开胶，帮我申请售后")],
+        "visual_evidence": {
+            "summary": "图片不清晰，无法确认鞋底问题",
+            "confidence": 0.42,
+            "needs_clarification": True,
+        },
+        "asset_key": "conv-1/evidence.jpg",
+    }
+    config = {"configurable": {"thread_id": "conv-1"}}
+
+
 class RecordingAgent:
     def __init__(self) -> None:
         self.payload = None
@@ -45,3 +58,18 @@ def test_post_sales_tool_passes_original_message_and_subtask() -> None:
     assert "订单 O1001 鞋底开胶" in prompt
     assert "创建售后申请" in prompt
     assert agent.config == FakeRuntime.config
+
+
+def test_post_sales_tool_injects_visual_evidence_context() -> None:
+    agent = RecordingAgent()
+    wrapped = make_post_sales_tool(agent)
+
+    wrapped.func("创建售后申请", FakeRuntimeWithVisual())
+
+    prompt = agent.payload["messages"][0]["content"]
+    assert "图片证据上下文" in prompt
+    assert "summary: 图片不清晰，无法确认鞋底问题" in prompt
+    assert "confidence: 0.42" in prompt
+    assert "usable_for_draft: false" in prompt
+    assert "needs_clarification: true" in prompt
+    assert "asset_key: conv-1/evidence.jpg" in prompt
