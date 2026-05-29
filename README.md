@@ -225,6 +225,82 @@ python scripts/evaluate_rag.py --offline
 - 默认规则模式不会解析图片像素；它只返回需要人工核验的证据结果。
 - 项目不连接真实订单、退款或客服系统，不声明线上生产效果。
 - RAG 指标来自固定评测集，适合作为工程演示证据，不等价于线上业务指标。
+- RAG 报告见 [latest_results.md](./python-impl/data/evaluation/latest_results.md)；当前提交中的报告已明确标为离线基线，不能作为 Milvus 检索成绩。
+
+## 快速验证
+
+以下命令默认从仓库根目录运行，并使用 Conda 环境 `customer_service`；如果本地环境名不同，请替换为自己的环境名。
+
+```bash
+cd python-impl
+conda activate customer_service
+pytest tests -q
+python scripts/evaluate_rag.py --offline
+```
+
+需要验证 Milvus 混合检索时，先确保当前用户具有 Docker 权限：
+
+```bash
+docker compose up -d etcd minio standalone
+cd python-impl
+conda activate customer_service
+python scripts/index_knowledge.py
+pytest tests/integration/test_milvus_hybrid.py -q
+python scripts/evaluate_rag.py
+```
+
+API 启动：
+
+```bash
+cd python-impl
+conda activate customer_service
+uvicorn smart_cs.main:app --app-dir src --host 0.0.0.0 --port 8000
+```
+
+主要接口：
+
+- `POST /api/conversations`
+- `POST /api/conversations/{id}/messages`
+- `POST /api/conversations/{id}/messages-with-image`
+- `POST /api/conversations/{id}/actions/confirm`
+- `GET /api/conversations/{id}/runs`
+- `GET /api/conversations/{id}/tool-calls`
+
+## Gradio 演示前端
+
+Gradio 是面向面试展示的演示层，通过 FastAPI HTTP APIs 调用后端能力。
+
+以下命令同样从仓库根目录运行。
+
+后端启动：
+
+```powershell
+cd python-impl
+conda activate customer_service
+pip install -e ".[demo,test]"
+python scripts/seed_demo_data.py
+uvicorn smart_cs.main:app --app-dir src --host 0.0.0.0 --port 8000
+```
+
+第二个 PowerShell 窗口启动 Gradio：
+
+```powershell
+cd python-impl
+conda activate customer_service
+python scripts/gradio_demo.py
+```
+
+Gradio 通常会打开在 <http://127.0.0.1:7860>。
+
+推荐演示顺序：
+
+1. 创建会话。
+2. 商品查询。
+3. 订单查询。
+4. 售后待确认动作。
+5. 确认提交。
+6. 查看 AgentRun、ToolCall、Raw JSON。
+7. 上传图片。
 
 ## 文档
 
