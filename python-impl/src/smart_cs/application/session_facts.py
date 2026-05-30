@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from smart_cs.infrastructure.prompts import SESSION_FACTS_EXTRACTION_PROMPT
@@ -37,17 +39,33 @@ class SessionFactsExtractor:
             try:
                 structured = self.model.with_structured_output(SessionFacts)
                 result = structured.invoke(
-                    {
-                        "system": SESSION_FACTS_EXTRACTION_PROMPT,
-                        "recent_messages": recent_messages,
-                        "previous_facts": previous_facts or {},
-                        "conversation_summary": conversation_summary or "",
-                    }
+                    self._messages(
+                        recent_messages=recent_messages,
+                        previous_facts=previous_facts,
+                        conversation_summary=conversation_summary,
+                    )
                 )
                 return result if isinstance(result, SessionFacts) else SessionFacts.model_validate(result)
             except Exception:
                 pass
         return self._fallback(recent_messages, previous_facts)
+
+    @staticmethod
+    def _messages(
+        *,
+        recent_messages: list[dict[str, Any]],
+        previous_facts: dict[str, Any] | None,
+        conversation_summary: str | None,
+    ) -> list[Any]:
+        payload = {
+            "recent_messages": recent_messages,
+            "previous_facts": previous_facts or {},
+            "conversation_summary": conversation_summary or "",
+        }
+        return [
+            SystemMessage(content=SESSION_FACTS_EXTRACTION_PROMPT),
+            HumanMessage(content=json.dumps(payload, ensure_ascii=False, default=str)),
+        ]
 
     def _fallback(
         self,

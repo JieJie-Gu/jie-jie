@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from smart_cs.agents.state import RuntimeState
 from smart_cs.application.agent_runtime import AgentRuntime
+from smart_cs.infrastructure.model_factory import ModelProfiles
 from smart_cs.tools.agent_tool_wrappers import RuntimeToolContext
 
 
@@ -42,6 +43,10 @@ class RecordingUpdateGraph:
 class FakeMemoryWriteback:
     def update(self, _state: dict[str, Any], *, store: Any) -> dict[str, Any]:
         return {"conversation_summary": "summary", "messages": []}
+
+
+class FakeExecutor:
+    repository = object()
 
 
 @dataclass
@@ -176,3 +181,27 @@ def test_runtime_state_does_not_define_duplicate_message_field() -> None:
     assert "messages" in RuntimeState.__annotations__
     assert "recent_messages" in RuntimeState.__annotations__
     assert "session_facts" in RuntimeState.__annotations__
+
+
+def test_agent_runtime_wires_model_profiles_into_context_builder(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(AgentRuntime, "_build_supervisor", lambda self: object())
+    profiles = ModelProfiles(
+        agent=object(),
+        extraction=object(),
+        summary=object(),
+        memory=object(),
+        rag=object(),
+        vision=object(),
+    )
+
+    runtime = AgentRuntime(
+        executor=FakeExecutor(),
+        checkpoint_path=tmp_path / "checkpoint.sqlite",
+        model_profiles=profiles,
+    )
+    try:
+        assert runtime.chat_model is profiles.agent
+        assert runtime.model_profiles is profiles
+        assert runtime.context_builder.session_facts_extractor.model is profiles.extraction
+    finally:
+        runtime.close()

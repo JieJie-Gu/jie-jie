@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from smart_cs.application.context_builder import RuntimeContextBuilder, project_recent_messages
+from smart_cs.infrastructure.database import Database
+from smart_cs.infrastructure.repositories import SqlRepository
 
 
 @dataclass
@@ -167,3 +169,30 @@ def test_project_recent_messages_truncates_and_projects_visual_evidence() -> Non
     assert projected[1]["content"] == "用户上传了图片"
     assert projected[1]["visual_evidence"]["summary"] == "鞋底开胶图片"
     assert projected[1]["visual_evidence"]["usable_for_draft"] is True
+
+
+def test_sql_repository_lists_recent_messages_in_chronological_window(tmp_path) -> None:
+    repository = SqlRepository(Database(f"sqlite:///{tmp_path / 'recent-messages.db'}"))
+    repository.create_schema()
+    repository.seed_demo_data()
+    repository.claim_conversation("conv-1", "C001")
+    for index in range(12):
+        repository.record_message(
+            "conv-1",
+            "C001",
+            "user" if index % 2 == 0 else "assistant",
+            f"message-{index}",
+        )
+
+    rows = repository.list_recent_messages("conv-1", "C001", limit=3)
+
+    assert [row["content"] for row in rows] == ["message-9", "message-10", "message-11"]
+    assert [row["role"] for row in rows] == ["assistant", "user", "assistant"]
+    assert set(rows[0]) == {
+        "role",
+        "content",
+        "content_type",
+        "asset_key",
+        "visual_evidence",
+        "created_at",
+    }

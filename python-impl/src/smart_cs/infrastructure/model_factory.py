@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_openai import ChatOpenAI
 
@@ -11,12 +12,23 @@ from smart_cs.config import Settings
 
 @dataclass(frozen=True)
 class ModelProfiles:
-    agent: ChatOpenAI
-    extraction: ChatOpenAI
-    summary: ChatOpenAI
-    memory: ChatOpenAI
-    rag: ChatOpenAI
-    vision: ChatOpenAI
+    agent: Any
+    extraction: Any
+    summary: Any
+    memory: Any
+    rag: Any
+    vision: Any
+
+    @classmethod
+    def from_single(cls, model: Any) -> "ModelProfiles":
+        return cls(
+            agent=model,
+            extraction=model,
+            summary=model,
+            memory=model,
+            rag=model,
+            vision=model,
+        )
 
 
 def configured_chat_model(settings: Settings, *, model: str | None = None) -> ChatOpenAI:

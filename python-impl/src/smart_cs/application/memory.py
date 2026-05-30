@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal, Protocol
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, SystemMessage
 from pydantic import BaseModel
 
 from smart_cs.domain.enums import ActionStatus
+from smart_cs.infrastructure.prompts import CONVERSATION_ROLLING_SUMMARY_PROMPT
 
 
 class MemoryStoreProtocol(Protocol):
@@ -227,11 +229,11 @@ class ConversationSummarizer:
         if self.summarizer is not None and removed_text:
             try:
                 response = self.summarizer.invoke(
-                    {
-                        "existing_summary": current,
-                        "new_messages": removed_text,
-                        "business_result": business_result,
-                    }
+                    self._messages(
+                        existing_summary=current,
+                        new_messages=removed_text,
+                        business_result=business_result,
+                    )
                 )
             except Exception:
                 return current
@@ -241,6 +243,23 @@ class ConversationSummarizer:
         else:
             text = current
         return text[-self.max_summary_chars:] if text else current
+
+    @staticmethod
+    def _messages(
+        *,
+        existing_summary: str,
+        new_messages: str,
+        business_result: dict[str, Any],
+    ) -> list[AnyMessage]:
+        payload = {
+            "existing_summary": existing_summary,
+            "new_messages": new_messages,
+            "business_result": business_result,
+        }
+        return [
+            SystemMessage(content=CONVERSATION_ROLLING_SUMMARY_PROMPT),
+            HumanMessage(content=json.dumps(payload, ensure_ascii=False, default=str)),
+        ]
 
 
 class MemoryWriteback:

@@ -1,6 +1,9 @@
 # 测试当前会话结构化事实抽取和规则兜底。
-
 from __future__ import annotations
+
+import json
+
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from smart_cs.application.session_facts import SessionFacts, SessionFactsExtractor
 
@@ -26,6 +29,7 @@ class FailingModel:
 
 
 def test_session_facts_extractor_uses_structured_output_model() -> None:
+    summary = "用户咨询售后"
     model = StructuredModel(
         SessionFacts(
             current_intent="after_sales",
@@ -37,10 +41,15 @@ def test_session_facts_extractor_uses_structured_output_model() -> None:
     facts = SessionFactsExtractor(model).extract(
         recent_messages=[{"role": "user", "content": "订单 O1001 鞋底开胶"}],
         previous_facts={"current_intent": "order_query"},
-        conversation_summary="用户咨询售后",
+        conversation_summary=summary,
     )
 
     assert model.schema is SessionFacts
+    assert isinstance(model.payload[0], SystemMessage)
+    assert isinstance(model.payload[1], HumanMessage)
+    payload = json.loads(model.payload[1].content)
+    assert payload["previous_facts"]["current_intent"] == "order_query"
+    assert payload["conversation_summary"] == summary
     assert facts.current_order_id == "O1001"
     assert facts.after_sales_reason == "鞋底开胶"
 

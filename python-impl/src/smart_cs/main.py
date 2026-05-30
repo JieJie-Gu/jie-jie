@@ -52,9 +52,9 @@ class LazyKnowledgeService:
         self._service: KnowledgeService | None = None
 
     def answer(self, query: str):
-        return self._get_agent().answer(query)
+        return self._get_service().answer(query)
 
-    def _get_agent(self) -> KnowledgeService:
+    def _get_service(self) -> KnowledgeService:
         if self._service is None:
             with self._lock:
                 if self._service is None:
@@ -95,8 +95,8 @@ def build_runtime(
     memory_store = SqlMemoryStoreAdapter(repository)
     runtime = AgentRuntime(
         executor=AuthorizedToolExecutor(repository),
-        chat_model=profiles.agent,
         checkpoint_path=settings.checkpoint_path,
+        model_profiles=profiles,
         knowledge_service=knowledge_service,
         memory_writeback=MemoryWriteback(
             repository=repository,

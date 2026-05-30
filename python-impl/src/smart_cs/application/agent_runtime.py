@@ -24,8 +24,10 @@ from smart_cs.agents.subagents import create_post_sales_agent, create_pre_sales_
 from smart_cs.application.context_builder import RuntimeContextBuilder
 from smart_cs.application.memory import MemoryWriteback, SqlMemoryStoreAdapter
 from smart_cs.application.policy import PolicyEngine
+from smart_cs.application.session_facts import SessionFactsExtractor
 from smart_cs.domain.enums import ActionStatus
 from smart_cs.domain.errors import ConversationLeaseLostError
+from smart_cs.infrastructure.model_factory import ModelProfiles
 from smart_cs.infrastructure.prompts import CUSTOMER_SERVICE_SUPERVISOR_PROMPT
 from smart_cs.tools.agent_tool_wrappers import (
     RuntimeToolContext,
@@ -127,8 +129,9 @@ class AgentRuntime:
         self,
         *,
         executor: AuthorizedToolExecutor,
-        chat_model: Any,
         checkpoint_path: str | Path,
+        chat_model: Any | None = None,
+        model_profiles: ModelProfiles | None = None,
         knowledge_service: KnowledgeService | None = None,
         policy_engine: PolicyEngine | None = None,
         memory_writeback: MemoryWriteback | None = None,
@@ -148,8 +151,14 @@ class AgentRuntime:
         if renew_interval_seconds <= 0 or renew_interval_seconds >= turn_lease_ttl_seconds:
             raise ValueError("Turn lease renew interval must be positive and shorter than TTL")
 
+        if model_profiles is None:
+            if chat_model is None:
+                raise ValueError("AgentRuntime requires chat_model or model_profiles")
+            model_profiles = ModelProfiles.from_single(chat_model)
+
         self.executor = executor
-        self.chat_model = chat_model
+        self.model_profiles = model_profiles
+        self.chat_model = model_profiles.agent
         self.knowledge_service = knowledge_service
         self.policy_engine = policy_engine or PolicyEngine()
         self.memory_writeback = memory_writeback
@@ -157,6 +166,7 @@ class AgentRuntime:
         self.context_builder = context_builder or RuntimeContextBuilder(
             executor.repository,
             self.store,
+            session_facts_extractor=SessionFactsExtractor(model_profiles.extraction),
         )
         self._graph_store = graph_store or InMemoryStore()
         self._turn_lease_ttl_seconds = turn_lease_ttl_seconds

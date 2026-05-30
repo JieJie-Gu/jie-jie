@@ -1,6 +1,8 @@
 # 测试记忆提取、策略分层和摘要写回行为。
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+import json
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from smart_cs.application.memory import (
     ConversationSummarizer,
@@ -174,8 +176,11 @@ def test_memory_writeback_with_real_summarizer_can_emit_remove_messages() -> Non
     )
 
     assert [message.id for message in update["messages"]] == ["h1", "a1"]
-    assert summarizer_model.payload["existing_summary"] == "old summary"
-    assert "first" in summarizer_model.payload["new_messages"]
+    assert isinstance(summarizer_model.payload[0], SystemMessage)
+    assert isinstance(summarizer_model.payload[1], HumanMessage)
+    payload = json.loads(summarizer_model.payload[1].content)
+    assert payload["existing_summary"] == "old summary"
+    assert "first" in payload["new_messages"]
     assert update["conversation_summary"] == "real summary"
 
 
