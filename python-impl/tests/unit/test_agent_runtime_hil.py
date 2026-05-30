@@ -41,7 +41,11 @@ class RecordingUpdateGraph:
 
 
 class FakeMemoryWriteback:
+    def __init__(self) -> None:
+        self.state = None
+
     def update(self, _state: dict[str, Any], *, store: Any) -> dict[str, Any]:
+        self.state = _state
         return {"conversation_summary": "summary", "messages": []}
 
 
@@ -174,6 +178,35 @@ def test_write_memory_applies_summary_to_graph_checkpoint() -> None:
             {"conversation_summary": "summary"},
         )
     ]
+
+
+def test_write_memory_passes_runtime_context_to_long_term_extractor() -> None:
+    runtime = runtime_shell()
+    runtime.graph = RecordingUpdateGraph()
+    runtime.memory_writeback = FakeMemoryWriteback()
+    runtime.store = object()
+
+    runtime._write_memory(
+        conversation_id="conv-1",
+        customer_id="C001",
+        request_id="req-1",
+        message="我一般穿42码",
+        messages=[],
+        business_result=None,
+        runtime_context={
+            "recent_messages": [{"role": "user", "content": "我一般穿42码"}],
+            "session_facts": {"current_intent": "pre_sales"},
+            "conversation_summary": "summary",
+            "customer_memories": [],
+            "pending_confirmation": None,
+            "visual_evidence": {"summary": "evidence"},
+            "asset_key": "asset-1",
+        },
+    )
+
+    assert runtime.memory_writeback.state["recent_messages"][0]["content"] == "我一般穿42码"
+    assert runtime.memory_writeback.state["session_facts"]["current_intent"] == "pre_sales"
+    assert runtime.memory_writeback.state["visual_evidence"]["summary"] == "evidence"
 
 
 def test_runtime_state_does_not_define_duplicate_message_field() -> None:

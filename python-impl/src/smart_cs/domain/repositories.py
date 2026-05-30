@@ -3,7 +3,17 @@
 from contextlib import AbstractContextManager
 from typing import Any, Protocol
 
-from smart_cs.domain.models import AgentRun, Conversation, Message, Order, PendingAction, Product, Ticket, ToolCall
+from smart_cs.domain.models import (
+    AgentRun,
+    Conversation,
+    MemoryRecord,
+    Message,
+    Order,
+    PendingAction,
+    Product,
+    Ticket,
+    ToolCall,
+)
 
 
 class CustomerFactsRepository(Protocol):
@@ -75,6 +85,34 @@ class CustomerFactsRepository(Protocol):
         *,
         limit: int = 10,
     ) -> list[dict[str, Any]]: ...
+
+    def get_memory(self, namespace: tuple[str, str, str], key: str) -> MemoryRecord | None: ...
+
+    def list_memory_candidates(
+        self,
+        *,
+        customer_id: str | None = None,
+        status: str = "pending",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+
+    def approve_memory_candidate(
+        self,
+        *,
+        candidate_key: str,
+        customer_id: str,
+        reviewer_id: str,
+        edited_value: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def reject_memory_candidate(
+        self,
+        *,
+        candidate_key: str,
+        customer_id: str,
+        reviewer_id: str,
+        reason: str,
+    ) -> dict[str, Any]: ...
 
     def search_products(self, query: str) -> list[Product]: ...
 

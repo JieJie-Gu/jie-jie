@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from smart_cs.application.memory_selector import (
+    MemoryContextSelector,
+    MemorySelectionInput,
+)
 from smart_cs.application.session_facts import SessionFactsExtractor
+from smart_cs.domain.enums import ToolCallStatus
 
 
 def project_recent_messages(
@@ -60,12 +65,14 @@ class RuntimeContextBuilder:
         memory_limit: int = 5,
         recent_message_limit: int = 10,
         session_facts_extractor: SessionFactsExtractor | None = None,
+        memory_selector: MemoryContextSelector | None = None,
     ) -> None:
         self.repository = repository
         self.memory_store = memory_store
         self.memory_limit = memory_limit
         self.recent_message_limit = recent_message_limit
         self.session_facts_extractor = session_facts_extractor or SessionFactsExtractor()
+        self.memory_selector = memory_selector or MemoryContextSelector()
 
     def build(
         self,
@@ -82,7 +89,11 @@ class RuntimeContextBuilder:
             recent_messages=recent_messages,
             conversation_summary=summary,
         ).model_dump()
-        memories = self._active_customer_memories(customer_id, message)
+        memories = self._active_customer_memories(
+            customer_id,
+            message,
+            intent=session_facts.get("current_intent"),
+        )
         pending = self._pending_action(conversation_id, customer_id)
         return {
             "conversation_summary": summary,
@@ -115,11 +126,14 @@ class RuntimeContextBuilder:
             lines = ["Active customer memories:"]
             for memory in memories:
                 memory_id = memory.get("memory_id") or memory.get("key") or ""
+                memory_kind = memory.get("memory_kind") or ""
+                memory_type = memory.get("memory_type") or ""
                 title = memory.get("title") or ""
                 description = memory.get("description") or ""
                 confidence = memory.get("confidence") or ""
                 lines.append(
-                    f"- {memory_id}: {title}; {description}; confidence={confidence}"
+                    f"- [{memory_kind}/{memory_type}] {memory_id}: {title}; "
+                    f"{description}; confidence={confidence}"
                 )
             blocks.append("\n".join(lines))
 
@@ -170,13 +184,56 @@ class RuntimeContextBuilder:
             return None
         return str(getattr(summary, "summary", "") or "") or None
 
-    def _active_customer_memories(self, customer_id: str, message: str) -> list[dict[str, Any]]:
+    def _active_customer_memories(
+        self,
+        customer_id: str,
+        message: str,
+        *,
+        intent: str | None = None,
+    ) -> list[dict[str, Any]]:
         namespace = ("customer", customer_id, "memories")
         search = getattr(self.memory_store, "search", None)
         if search is None:
             return []
-        records = search(namespace, query=message, limit=self.memory_limit)
-        return [self._memory_record_to_dict(record) for record in records[: self.memory_limit]]
+        records = search(
+            namespace,
+            query=message,
+            limit=max(self.memory_limit * 4, 20),
+        )
+        raw_memories = [self._memory_record_to_dict(record) for record in records]
+        selected = self.memory_selector.select(
+            MemorySelectionInput(
+                query=message,
+                intent=intent,
+                memories=raw_memories,
+                limit=self.memory_limit,
+                max_chars=1200,
+            )
+        )
+        projected = [memory.model_dump() for memory in selected.memories]
+        self._record_memory_select(customer_id, message, intent, projected)
+        return projected
+
+    def _record_memory_select(
+        self,
+        customer_id: str,
+        query: str,
+        intent: str | None,
+        memories: list[dict[str, Any]],
+    ) -> None:
+        recorder = getattr(self.repository, "record_tool_call", None)
+        if recorder is None:
+            return
+        try:
+            recorder(
+                tool_name="memory_select",
+                arguments={"customer_id": customer_id, "query": query, "intent": intent},
+                customer_id=customer_id,
+                status=ToolCallStatus.SUCCEEDED.value,
+                result={"count": len(memories), "memories": memories},
+            )
+        except Exception:
+            return
 
     def _recent_messages(self, conversation_id: str, customer_id: str) -> list[dict[str, Any]]:
         getter = getattr(self.repository, "list_recent_messages", None)

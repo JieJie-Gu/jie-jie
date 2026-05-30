@@ -240,6 +240,9 @@ class AgentRuntime:
                 turn_fence=self._current_turn_fence(),
                 visual_evidence=visual_evidence,
                 asset_key=asset_key,
+                runtime_context=runtime_context,
+                memory_store=self.store,
+                memory_selector=self.context_builder.memory_selector,
             )
             with self._tool_context(ctx):
                 graph_result = self.graph.invoke(
@@ -264,6 +267,7 @@ class AgentRuntime:
                 ctx,
                 message=message,
                 fallback_messages=graph_messages,
+                runtime_context=runtime_context,
             )
             if interrupt_result is not None:
                 return interrupt_result
@@ -284,6 +288,7 @@ class AgentRuntime:
                 message=message,
                 messages=graph_result.get("messages") or graph_messages,
                 business_result=result.get("result"),
+                runtime_context=runtime_context,
             )
             return result
 
@@ -358,6 +363,7 @@ class AgentRuntime:
                 message="",
                 messages=messages,
                 business_result=result,
+                runtime_context=None,
             )
             return public
 
@@ -453,6 +459,7 @@ class AgentRuntime:
         *,
         message: str,
         fallback_messages: list[BaseMessage],
+        runtime_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         interrupts = graph_result.get("__interrupt__")
         if not interrupts:
@@ -483,6 +490,7 @@ class AgentRuntime:
             message=message,
             messages=graph_result.get("messages") or fallback_messages,
             business_result=action,
+            runtime_context=runtime_context,
         )
         return self._pending_result(
             action,
@@ -609,18 +617,32 @@ class AgentRuntime:
         message: str,
         messages: list[BaseMessage],
         business_result: dict[str, Any] | None,
+        runtime_context: dict[str, Any] | None = None,
     ) -> None:
         if self.memory_writeback is None:
             return
+        state = {
+            "conversation_id": conversation_id,
+            "customer_id": customer_id,
+            "request_id": request_id,
+            "message": message,
+            "messages": messages,
+            "business_result": business_result,
+        }
+        if runtime_context:
+            state.update(
+                {
+                    "recent_messages": runtime_context.get("recent_messages") or [],
+                    "session_facts": runtime_context.get("session_facts") or {},
+                    "conversation_summary": runtime_context.get("conversation_summary"),
+                    "customer_memories": runtime_context.get("customer_memories") or [],
+                    "pending_confirmation": runtime_context.get("pending_confirmation"),
+                    "visual_evidence": runtime_context.get("visual_evidence"),
+                    "asset_key": runtime_context.get("asset_key"),
+                }
+            )
         updates = self.memory_writeback.update(
-            {
-                "conversation_id": conversation_id,
-                "customer_id": customer_id,
-                "request_id": request_id,
-                "message": message,
-                "messages": messages,
-                "business_result": business_result,
-            },
+            state,
             store=self.store,
         )
         checkpoint_updates: dict[str, Any] = {}

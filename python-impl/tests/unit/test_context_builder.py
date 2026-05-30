@@ -86,7 +86,7 @@ class RecordingMemoryStore:
     def search(self, namespace, query: str, limit: int):
         self.namespaces.append(namespace)
         assert query == "need after-sales"
-        assert limit == 5
+        assert limit == 20
         return [
             Memory(
                 id="M1",
@@ -94,7 +94,12 @@ class RecordingMemoryStore:
                 title="Shoe size preference",
                 description="Usually wears size 42.",
                 confidence="high",
-                value_json={"memory_type": "preference"},
+                value_json={
+                    "memory_kind": "semantic",
+                    "memory_type": "preference",
+                    "risk_level": "low",
+                    "review_status": "approved",
+                },
             )
         ]
 

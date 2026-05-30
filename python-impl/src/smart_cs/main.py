@@ -18,6 +18,7 @@ from smart_cs.agents.vision import LangChainVisionModel, VisionAgent
 from smart_cs.application.agent_runtime import AgentRuntime
 from smart_cs.application.context_builder import RuntimeContextBuilder
 from smart_cs.application.conversation_service import ConversationService
+from smart_cs.application.long_term_memory import LongTermMemoryExtractor
 from smart_cs.application.memory import ConversationSummarizer, MemoryWriteback, SqlMemoryStoreAdapter
 from smart_cs.application.session_facts import SessionFactsExtractor
 from smart_cs.config import Settings
@@ -101,6 +102,7 @@ def build_runtime(
         memory_writeback=MemoryWriteback(
             repository=repository,
             summarizer=ConversationSummarizer(summarizer=profiles.summary),
+            extractor=LongTermMemoryExtractor(model=profiles.memory),
         ),
         context_builder=RuntimeContextBuilder(
             repository,

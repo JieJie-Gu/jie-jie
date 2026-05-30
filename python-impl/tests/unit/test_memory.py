@@ -6,8 +6,11 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from smart_cs.application.memory import (
     ConversationSummarizer,
+    MemoryCandidate,
+    MemoryDecision,
     MemoryExtractor,
     MemoryPolicy,
+    MemoryWriter,
     MemoryWriteback,
 )
 
@@ -23,9 +26,14 @@ class DummyRepository:
 class RecordingStore:
     def __init__(self) -> None:
         self.writes = []
+        self.records = {}
 
     def put(self, namespace, key, value) -> None:
         self.writes.append((namespace, key, value))
+        self.records[(namespace, key)] = value
+
+    def get(self, namespace, key):
+        return self.records.get((namespace, key))
 
     def search(self, namespace, query: str, limit: int):
         return []
@@ -42,12 +50,13 @@ def test_memory_extractor_creates_preference_candidate_from_user_message() -> No
     )
 
     preference = next(candidate for candidate in candidates if candidate["memory_type"] == "preference")
-    assert preference["key"] == "shoe_size"
+    assert preference["memory_kind"] == "semantic"
+    assert preference["key"] == "preference:shoe_size"
     assert preference["value"] == {"shoe_size": "42"}
     assert preference["evidence"][0]["text"] == "我一般穿42码"
 
 
-def test_memory_writeback_keeps_candidates_out_of_active_memories() -> None:
+def test_memory_writeback_writes_high_confidence_preference_to_active_memories() -> None:
     repository = DummyRepository()
     store = RecordingStore()
 
@@ -63,10 +72,10 @@ def test_memory_writeback_keeps_candidates_out_of_active_memories() -> None:
         store=store,
     )
 
-    assert store.writes
     namespace, _key, value = store.writes[0]
-    assert namespace == ("customer", "C001", "memory_candidates")
-    assert value["memory_decision"]["action"] == "candidate"
+    assert namespace == ("customer", "C001", "memories")
+    assert value["memory_kind"] == "semantic"
+    assert value["memory_decision"]["action"] == "write"
 
 
 def test_service_event_writes_conversation_events_namespace() -> None:
@@ -92,7 +101,8 @@ def test_service_event_writes_conversation_events_namespace() -> None:
 
     namespace, key, value = store.writes[0]
     assert namespace == ("conversation", "conv-1", "events")
-    assert key == "after_sales:A1:submitted"
+    assert key == "episode:after_sales_event:A1:submitted"
+    assert value["memory_kind"] == "episodic"
     assert value["memory_decision"]["action"] == "write"
 
 
@@ -101,6 +111,101 @@ def test_memory_policy_routes_sensitive_and_badcase_to_human_review() -> None:
 
     assert policy.decide({"memory_type": "sensitive_label", "risk_level": "high"}).action == "human_review"
     assert policy.decide({"memory_type": "badcase_candidate", "risk_level": "medium"}).action == "human_review"
+
+
+def test_memory_writer_semantic_same_key_merges_evidence_and_sets_ttl() -> None:
+    store = RecordingStore()
+    writer = MemoryWriter()
+    decision = MemoryDecision(action="write", reason="approved_semantic_memory")
+    first = MemoryCandidate(
+        scope="customer",
+        owner_id="C001",
+        memory_kind="semantic",
+        memory_type="preference",
+        key="preference:shoe_size",
+        title="Shoe size",
+        description="User wears size 42.",
+        value={"shoe_size": "42"},
+        evidence=[{"text": "我一般穿42码"}],
+        source="llm_extraction",
+        confidence="high",
+        risk_level="low",
+        review_status="approved",
+    )
+    second = first.model_copy(update={"evidence": [{"text": "通常42码"}]})
+
+    writer.write(first, decision, store)
+    writer.write(second, decision, store)
+
+    namespace, key, value = store.writes[-1]
+    assert namespace == ("customer", "C001", "memories")
+    assert key == "preference:shoe_size"
+    assert value["review_status"] == "approved"
+    assert value["expires_at"] is not None
+    assert len(value["evidence"]) == 2
+
+
+def test_memory_writer_semantic_conflict_marks_pending() -> None:
+    store = RecordingStore()
+    writer = MemoryWriter()
+    decision = MemoryDecision(action="write", reason="approved_semantic_memory")
+    first = MemoryCandidate(
+        scope="customer",
+        owner_id="C001",
+        memory_kind="semantic",
+        memory_type="preference",
+        key="preference:shoe_size",
+        title="Shoe size",
+        description="User wears size 42.",
+        value={"shoe_size": "42"},
+        evidence=[{"text": "我一般穿42码"}],
+        source="llm_extraction",
+        confidence="high",
+        risk_level="low",
+        review_status="approved",
+    )
+    second = first.model_copy(update={"value": {"shoe_size": "43"}})
+
+    writer.write(first, decision, store)
+    writer.write(second, decision, store)
+
+    _namespace, _key, value = store.writes[-1]
+    assert value["conflict"] is True
+    assert value["review_status"] == "pending"
+    assert value["confidence"] == "medium"
+    assert value["value"]["previous"] == {"shoe_size": "42"}
+    assert value["value"]["current"] == {"shoe_size": "43"}
+
+
+def test_memory_writer_episodic_same_key_is_idempotent_append() -> None:
+    store = RecordingStore()
+    writer = MemoryWriter()
+    decision = MemoryDecision(action="write", reason="approved_episodic_memory")
+    event = MemoryCandidate(
+        scope="conversation",
+        owner_id="conv-1",
+        memory_kind="episodic",
+        memory_type="after_sales_event",
+        key="episode:after_sales_event:A1:submitted",
+        title="After sales submitted",
+        description="Ticket submitted.",
+        value={"action_id": "A1", "status": "submitted"},
+        evidence=[{"action_id": "A1"}],
+        source="tool_result",
+        confidence="high",
+        risk_level="low",
+        review_status="approved",
+    )
+
+    writer.write(event, decision, store)
+    writer.write(event, decision, store)
+
+    namespace, key, value = store.writes[-1]
+    assert namespace == ("conversation", "conv-1", "events")
+    assert key == "episode:after_sales_event:A1:submitted"
+    assert value["memory_kind"] == "episodic"
+    assert value["expires_at"] is not None
+    assert len(value["evidence"]) == 1
 
 
 def test_summarizer_removes_only_human_and_ai_messages() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -12,7 +12,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from smart_cs.domain.enums import ActionStatus, OrderStatus, TicketStatus
+from smart_cs.domain.enums import ActionStatus, OrderStatus, TicketStatus, ToolCallStatus
 from smart_cs.domain.errors import (
     ConversationBusyError,
     ConversationLeaseLostError,
@@ -559,6 +559,7 @@ class SqlRepository:
     ) -> MemoryRecord:
         namespace_text = "/".join(namespace)
         memory_id = f"{namespace_text}:{key}"
+        expires_at = self._parse_datetime(value.get("expires_at"))
         with self.transaction() as session:
             row = session.get(MemoryRecord, memory_id)
             if row is None:
@@ -578,6 +579,7 @@ class SqlRepository:
                     risk_level=risk_level,
                     review_status=str(value.get("review_status", "pending")),
                     created_by=created_by,
+                    expires_at=expires_at,
                 )
                 session.add(row)
             else:
@@ -589,8 +591,15 @@ class SqlRepository:
                 row.risk_level = risk_level
                 row.source = source
                 row.review_status = str(value.get("review_status", "pending"))
+                row.expires_at = expires_at
             session.flush()
             return row
+
+    def get_memory(self, namespace: tuple[str, str, str], key: str) -> MemoryRecord | None:
+        namespace_text = "/".join(namespace)
+        memory_id = f"{namespace_text}:{key}"
+        with self.transaction() as session:
+            return session.get(MemoryRecord, memory_id)
 
     def search_memories(
         self, namespace: tuple[str, str, str], query: str, limit: int
@@ -604,6 +613,174 @@ class SqlRepository:
                 .limit(limit)
             )
             return list(session.scalars(statement))
+
+    def list_memory_candidates(
+        self,
+        *,
+        customer_id: str | None = None,
+        status: str = "pending",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        with self.transaction() as session:
+            statement = select(MemoryRecord).where(MemoryRecord.review_status == status)
+            if customer_id is not None:
+                statement = statement.where(
+                    MemoryRecord.namespace == f"customer/{customer_id}/memory_candidates"
+                )
+            else:
+                statement = statement.where(MemoryRecord.namespace.like("%/memory_candidates"))
+            statement = statement.order_by(MemoryRecord.updated_at.desc(), MemoryRecord.id.desc()).limit(limit)
+            return [self._memory_record_result(record) for record in session.scalars(statement)]
+
+    def approve_memory_candidate(
+        self,
+        *,
+        candidate_key: str,
+        customer_id: str,
+        reviewer_id: str,
+        edited_value: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        candidate_namespace = ("customer", customer_id, "memory_candidates")
+        active_namespace = ("customer", customer_id, "memories")
+        with self.transaction() as session:
+            candidate = session.get(
+                MemoryRecord,
+                f"{'/'.join(candidate_namespace)}:{candidate_key}",
+            )
+            if candidate is None:
+                raise ToolPermissionError("Memory candidate is not available")
+            before = self._memory_record_result(candidate)
+            value = dict(candidate.value_json)
+            if edited_value is not None:
+                if any(key in edited_value for key in {"memory_type", "memory_kind", "value"}):
+                    value.update(edited_value)
+                else:
+                    value["value"] = edited_value
+            value["review_status"] = "approved"
+            value["source"] = "human_review"
+            active_id = f"{'/'.join(active_namespace)}:{candidate_key}"
+            active = session.get(MemoryRecord, active_id)
+            if active is None:
+                active = MemoryRecord(
+                    id=active_id,
+                    namespace="/".join(active_namespace),
+                    scope="customer",
+                    owner_id=customer_id,
+                    memory_type=str(value.get("memory_type", candidate.memory_type)),
+                    key=candidate_key,
+                    title=str(value.get("title", candidate.title)),
+                    description=str(value.get("description", candidate.description)),
+                    value_json=value,
+                    evidence_json=list(value.get("evidence", candidate.evidence_json)),
+                    source="human_review",
+                    confidence=str(value.get("confidence", candidate.confidence)),
+                    risk_level=str(value.get("risk_level", candidate.risk_level)),
+                    review_status="approved",
+                    created_by=candidate.created_by,
+                    approved_by=reviewer_id,
+                    expires_at=self._parse_datetime(value.get("expires_at")),
+                )
+                session.add(active)
+            else:
+                active.title = str(value.get("title", candidate.title))
+                active.description = str(value.get("description", candidate.description))
+                active.value_json = value
+                active.evidence_json = list(value.get("evidence", candidate.evidence_json))
+                active.source = "human_review"
+                active.confidence = str(value.get("confidence", candidate.confidence))
+                active.risk_level = str(value.get("risk_level", candidate.risk_level))
+                active.review_status = "approved"
+                active.approved_by = reviewer_id
+                active.expires_at = self._parse_datetime(value.get("expires_at"))
+            candidate.review_status = "approved"
+            candidate.value_json = value
+            candidate.approved_by = reviewer_id
+            session.flush()
+            after = self._memory_record_result(active)
+            self.record_tool_call(
+                tool_name="memory_review",
+                arguments={
+                    "candidate_key": candidate_key,
+                    "customer_id": customer_id,
+                    "reviewer_id": reviewer_id,
+                    "decision": "approve",
+                },
+                customer_id=customer_id,
+                status=ToolCallStatus.SUCCEEDED.value,
+                result={"before": before, "after": after},
+                session=session,
+            )
+            return after
+
+    def reject_memory_candidate(
+        self,
+        *,
+        candidate_key: str,
+        customer_id: str,
+        reviewer_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        namespace = ("customer", customer_id, "memory_candidates")
+        with self.transaction() as session:
+            candidate = session.get(MemoryRecord, f"{'/'.join(namespace)}:{candidate_key}")
+            if candidate is None:
+                raise ToolPermissionError("Memory candidate is not available")
+            before = self._memory_record_result(candidate)
+            value = dict(candidate.value_json)
+            value["review_status"] = "rejected"
+            value["review_reason"] = reason
+            candidate.review_status = "rejected"
+            candidate.value_json = value
+            candidate.approved_by = reviewer_id
+            session.flush()
+            after = self._memory_record_result(candidate)
+            self.record_tool_call(
+                tool_name="memory_review",
+                arguments={
+                    "candidate_key": candidate_key,
+                    "customer_id": customer_id,
+                    "reviewer_id": reviewer_id,
+                    "decision": "reject",
+                    "reason": reason,
+                },
+                customer_id=customer_id,
+                status=ToolCallStatus.SUCCEEDED.value,
+                result={"before": before, "after": after},
+                session=session,
+            )
+            return after
+
+    @staticmethod
+    def _memory_record_result(record: MemoryRecord) -> dict[str, Any]:
+        return {
+            "id": record.id,
+            "namespace": record.namespace,
+            "scope": record.scope,
+            "owner_id": record.owner_id,
+            "memory_type": record.memory_type,
+            "key": record.key,
+            "title": record.title,
+            "description": record.description,
+            "value": record.value_json,
+            "evidence": record.evidence_json,
+            "source": record.source,
+            "confidence": record.confidence,
+            "risk_level": record.risk_level,
+            "review_status": record.review_status,
+            "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+        }
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     @staticmethod
     def _claim_conversation(session: Session, conversation_id: str, customer_id: str) -> Conversation:

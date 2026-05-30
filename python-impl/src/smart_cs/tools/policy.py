@@ -57,6 +57,13 @@ def default_tool_registry() -> ToolRegistry:
                 True,
             ),
             ToolPolicy(
+                "recall_memory",
+                "low",
+                frozenset({"PreSalesAgent", "PostSalesAgent"}),
+                False,
+                True,
+            ),
+            ToolPolicy(
                 "request_after_sales",
                 "high",
                 frozenset({"PostSalesAgent"}),

@@ -90,6 +90,33 @@ SESSION_FACTS_EXTRACTION_PROMPT = """
 """.strip()
 
 
+LONG_TERM_MEMORY_EXTRACTION_PROMPT = """
+你是电商客服长期记忆抽取器。
+
+请从当前会话上下文中抽取长期记忆候选。长期记忆分两类：
+
+1. semantic memory：
+   用户稳定偏好、画像、约束、服务习惯。
+   例如鞋码、颜色偏好、联系方式偏好、收货时间偏好、预算偏好。
+
+2. episodic memory：
+   某次具体服务事件。
+   例如订单查询、售后申请、退款申请、换货、转人工、投诉、取消申请。
+
+严格规则：
+- 不要把本次临时需求误写成长期偏好。
+- 不要把用户一时情绪写成长期画像。
+- 不要根据模型推测生成记忆。
+- 所有记忆必须有 evidence。
+- 高风险、敏感、badcase 必须 review_status=pending。
+- 明确、低风险、高置信度的 preference 可以 review_status=approved。
+- 售后、转人工、投诉等具体事件可以作为 episodic memory。
+- 不要输出没有证据的事实。
+
+输出必须符合 LongTermMemoryExtraction schema。
+""".strip()
+
+
 CONVERSATION_ROLLING_SUMMARY_PROMPT = """
 你是电商客服会话摘要器。
 请根据旧摘要和待压缩消息生成 updated summary。
@@ -109,3 +136,11 @@ CONVERSATION_ROLLING_SUMMARY_PROMPT = """
 不要丢失订单号、售后原因、用户约束。
 输出简洁中文摘要。
 """.strip()
+_RECALL_MEMORY_PROMPT_RULE = """
+记忆工具规则：
+- 当用户说“刚才那个”“上次一样”“按我之前习惯”“之前的订单”等上下文不明确表达时，可以调用 recall_memory 查询短期或长期记忆。
+- recall_memory 只用于补充上下文，不替代 lookup_order、knowledge_rag 或售后 PolicyEngine。
+""".strip()
+
+PRE_SALES_AGENT_PROMPT = f"{PRE_SALES_AGENT_PROMPT}\n\n{_RECALL_MEMORY_PROMPT_RULE}"
+POST_SALES_AGENT_PROMPT = f"{POST_SALES_AGENT_PROMPT}\n\n{_RECALL_MEMORY_PROMPT_RULE}"

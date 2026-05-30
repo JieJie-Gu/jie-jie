@@ -1,7 +1,7 @@
 # 提取、审核并写入长期记忆候选和会话服务事件。
-
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import json
 import re
 from typing import Any, Literal, Protocol
@@ -9,12 +9,14 @@ from typing import Any, Literal, Protocol
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, SystemMessage
 from pydantic import BaseModel
 
-from smart_cs.domain.enums import ActionStatus
+from smart_cs.domain.enums import ActionStatus, ToolCallStatus
 from smart_cs.infrastructure.prompts import CONVERSATION_ROLLING_SUMMARY_PROMPT
 
 
 class MemoryStoreProtocol(Protocol):
     def put(self, namespace: tuple[str, str, str], key: str, value: dict[str, Any]) -> None: ...
+
+    def get(self, namespace: tuple[str, str, str], key: str) -> Any | None: ...
 
     def search(self, namespace: tuple[str, str, str], query: str, limit: int) -> list[Any]: ...
 
@@ -27,38 +29,98 @@ class MemoryDecision(BaseModel):
 class MemoryCandidate(BaseModel):
     scope: Literal["customer", "conversation", "tenant"]
     owner_id: str
+    memory_kind: Literal["semantic", "episodic"]
     memory_type: Literal[
-        "preference", "service_event", "risk_event", "sensitive_label", "badcase_candidate"
+        "preference",
+        "profile",
+        "constraint",
+        "service_event",
+        "after_sales_event",
+        "handoff_event",
+        "complaint_event",
+        "order_event",
+        "risk_event",
+        "sensitive_label",
+        "badcase_candidate",
     ]
     key: str
     title: str
     description: str
     value: dict[str, Any]
     evidence: list[dict[str, Any]]
-    source: str
+    source: Literal["llm_extraction", "tool_result", "user_message", "system", "human_review"]
     confidence: Literal["low", "medium", "high"]
     risk_level: Literal["low", "medium", "high"]
     review_status: Literal["pending", "approved", "rejected"] = "pending"
+    expires_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+def normalize_memory_candidate(raw: dict[str, Any]) -> dict[str, Any]:
+    candidate = dict(raw)
+    memory_type = str(candidate.get("memory_type") or "preference")
+    if not candidate.get("memory_kind"):
+        candidate["memory_kind"] = (
+            "episodic"
+            if memory_type
+            in {
+                "service_event",
+                "after_sales_event",
+                "handoff_event",
+                "complaint_event",
+                "order_event",
+            }
+            else "semantic"
+        )
+    source = str(candidate.get("source") or "system")
+    if source in {"pending_action", "confirmed_action"}:
+        candidate["source"] = "tool_result"
+    candidate.setdefault("review_status", "pending")
+    candidate.setdefault("evidence", [])
+    candidate.setdefault("value", {})
+    return candidate
 
 
 class MemoryPolicy:
     def decide(self, candidate: dict[str, Any]) -> MemoryDecision:
+        kind = candidate.get("memory_kind")
         memory_type = candidate.get("memory_type")
+        confidence = candidate.get("confidence")
         risk_level = candidate.get("risk_level")
-        if memory_type == "service_event" and risk_level == "low":
-            return MemoryDecision(action="write", reason="low_risk_service_event")
-        if memory_type == "preference":
-            return MemoryDecision(action="candidate", reason="user_preference_candidate")
-        if memory_type in {"sensitive_label", "risk_label", "risk_event"}:
-            return MemoryDecision(action="human_review", reason="sensitive_memory")
-        if memory_type == "badcase_candidate":
-            return MemoryDecision(action="human_review", reason="badcase_requires_review")
+
+        if memory_type in {"sensitive_label", "risk_event", "badcase_candidate"}:
+            return MemoryDecision(
+                action="human_review",
+                reason="sensitive_or_risk_memory_requires_review",
+            )
+        if risk_level == "high":
+            return MemoryDecision(action="human_review", reason="high_risk_memory_requires_review")
+        if confidence == "low":
+            return MemoryDecision(action="candidate", reason="low_confidence_memory_candidate")
+
+        if kind == "semantic" and memory_type in {"preference", "profile", "constraint"}:
+            if confidence == "high" and risk_level == "low":
+                return MemoryDecision(action="write", reason="approved_semantic_memory")
+            return MemoryDecision(action="candidate", reason="semantic_memory_needs_more_evidence")
+
+        if kind == "episodic":
+            if memory_type in {
+                "service_event",
+                "after_sales_event",
+                "handoff_event",
+                "order_event",
+            } and risk_level in {"low", "medium"}:
+                return MemoryDecision(action="write", reason="approved_episodic_memory")
+            if memory_type == "complaint_event":
+                return MemoryDecision(action="candidate", reason="complaint_event_needs_review")
+
         return MemoryDecision(action="discard", reason="unsupported_memory")
 
 
 PREFERENCE_PATTERNS = [
-    ("shoe_size", re.compile(r"我(?:一般|通常)?穿(\d{2})码")),
-    ("color_preference", re.compile(r"我(?:喜欢|偏好)(黑色|白色|灰色|蓝色)")),
+    ("shoe_size", re.compile(r"(?:我(?:一般|通常)?穿|鞋码(?:是)?)(\d{2})码?")),
+    ("color_preference", re.compile(r"(?:我(?:喜欢|偏好)|偏好)(黑色|白色|灰色|蓝色)")),
     ("contact_preference", re.compile(r"(?:以后|之后).*(?:别|不要).*打电话")),
 ]
 
@@ -81,13 +143,17 @@ class MemoryExtractor:
             ActionStatus.CANCELLED.value,
         }:
             return []
-        source = "pending_action" if status == ActionStatus.PENDING_CONFIRMATION.value else "confirmed_action"
+        memory_type = {
+            "after_sales": "after_sales_event",
+            "handoff": "handoff_event",
+        }.get(str(action_type), "service_event")
         return [
             MemoryCandidate(
                 scope="conversation",
                 owner_id=state["conversation_id"],
-                memory_type="service_event",
-                key=f"{action_type}:{action_id}:{status}",
+                memory_kind="episodic",
+                memory_type=memory_type,
+                key=f"episode:{memory_type}:{action_id}:{status}",
                 title=f"{action_type} {status}",
                 description=f"Conversation action {action_id} reached {status}.",
                 value={
@@ -102,9 +168,10 @@ class MemoryExtractor:
                         "business_result": result,
                     }
                 ],
-                source=source,
+                source="tool_result",
                 confidence="high",
                 risk_level="low",
+                review_status="approved",
             )
         ]
 
@@ -122,8 +189,9 @@ class MemoryExtractor:
                 MemoryCandidate(
                     scope="customer",
                     owner_id=state["customer_id"],
+                    memory_kind="semantic",
                     memory_type="preference",
-                    key=key,
+                    key=f"preference:{key}",
                     title=self._preference_title(key, raw_value),
                     description=f"User explicitly stated preference {key}={raw_value}.",
                     value={key: raw_value},
@@ -131,6 +199,7 @@ class MemoryExtractor:
                     source="user_message",
                     confidence="high",
                     risk_level="low",
+                    review_status="approved",
                 )
             )
         return candidates
@@ -165,11 +234,28 @@ class SqlMemoryStoreAdapter:
             created_by="system",
         )
 
+    def get(self, namespace: tuple[str, str, str], key: str) -> Any | None:
+        getter = getattr(self.repository, "get_memory", None)
+        if getter is None:
+            return None
+        return getter(namespace, key)
+
     def search(self, namespace: tuple[str, str, str], query: str, limit: int) -> list[Any]:
         return self.repository.search_memories(namespace, query=query, limit=limit)
 
 
 class MemoryWriter:
+    DEFAULT_MEMORY_TTL_DAYS = {
+        "preference": 365,
+        "profile": 365,
+        "constraint": 365,
+        "service_event": 180,
+        "after_sales_event": 365,
+        "handoff_event": 180,
+        "complaint_event": 365,
+        "order_event": 180,
+    }
+
     def write(
         self,
         candidate: MemoryCandidate,
@@ -179,22 +265,120 @@ class MemoryWriter:
         if decision.action == "discard":
             return
         namespace = self._namespace_for(candidate, decision)
-        value = candidate.model_dump()
-        value["memory_decision"] = decision.model_dump()
-        store.put(namespace, candidate.key, value)
+        if decision.action == "write":
+            if candidate.memory_kind == "semantic":
+                self._upsert_semantic(candidate, decision, namespace, store)
+                return
+            if candidate.memory_kind == "episodic":
+                self._append_episodic(candidate, decision, namespace, store)
+                return
+        self._write_candidate(candidate, decision, namespace, store)
 
     @staticmethod
     def _namespace_for(
         candidate: MemoryCandidate,
         decision: MemoryDecision,
     ) -> tuple[str, str, str]:
-        if candidate.memory_type == "service_event" and decision.action == "write":
+        if candidate.scope == "conversation" and decision.action == "write":
             return ("conversation", candidate.owner_id, "events")
         if candidate.memory_type == "badcase_candidate":
             return ("tenant", candidate.owner_id or "default", "badcase_candidates")
         if decision.action == "write":
             return (candidate.scope, candidate.owner_id, "memories")
         return (candidate.scope, candidate.owner_id, "memory_candidates")
+
+    def _upsert_semantic(
+        self,
+        candidate: MemoryCandidate,
+        decision: MemoryDecision,
+        namespace: tuple[str, str, str],
+        store: MemoryStoreProtocol,
+    ) -> None:
+        value = self._payload(candidate, decision)
+        existing = self._stored_value(store.get(namespace, candidate.key))
+        if existing:
+            old_value = existing.get("value") if isinstance(existing.get("value"), dict) else {}
+            if old_value == candidate.value or old_value.get("current") == candidate.value:
+                value["evidence"] = self._merge_evidence(existing.get("evidence", []), value["evidence"])
+                value["confidence"] = self._higher_confidence(
+                    str(existing.get("confidence") or "medium"),
+                    value["confidence"],
+                )
+            else:
+                value["value"] = {"current": candidate.value, "previous": old_value}
+                value["confidence"] = "medium"
+                value["review_status"] = "pending"
+                value["conflict"] = True
+                value["evidence"] = self._merge_evidence(existing.get("evidence", []), value["evidence"])
+        store.put(namespace, candidate.key, value)
+
+    def _append_episodic(
+        self,
+        candidate: MemoryCandidate,
+        decision: MemoryDecision,
+        namespace: tuple[str, str, str],
+        store: MemoryStoreProtocol,
+    ) -> None:
+        value = self._payload(candidate, decision)
+        existing = self._stored_value(store.get(namespace, candidate.key))
+        if existing:
+            value["evidence"] = self._merge_evidence(existing.get("evidence", []), value["evidence"])
+        store.put(namespace, candidate.key, value)
+
+    def _write_candidate(
+        self,
+        candidate: MemoryCandidate,
+        decision: MemoryDecision,
+        namespace: tuple[str, str, str],
+        store: MemoryStoreProtocol,
+    ) -> None:
+        store.put(namespace, candidate.key, self._payload(candidate, decision))
+
+    def _payload(self, candidate: MemoryCandidate, decision: MemoryDecision) -> dict[str, Any]:
+        value = candidate.model_dump()
+        now = datetime.now(UTC).isoformat()
+        value["created_at"] = value.get("created_at") or now
+        value["updated_at"] = now
+        value["expires_at"] = value.get("expires_at") or self._default_expires_at(candidate.memory_type)
+        value["memory_decision"] = decision.model_dump()
+        return value
+
+    def _default_expires_at(self, memory_type: str) -> str | None:
+        days = self.DEFAULT_MEMORY_TTL_DAYS.get(memory_type)
+        if days is None:
+            return None
+        return (datetime.now(UTC) + timedelta(days=days)).isoformat()
+
+    @staticmethod
+    def _stored_value(record: Any | None) -> dict[str, Any]:
+        if record is None:
+            return {}
+        if isinstance(record, dict):
+            return dict(record)
+        value = getattr(record, "value", None)
+        if isinstance(value, dict):
+            return dict(value)
+        value_json = getattr(record, "value_json", None)
+        return dict(value_json) if isinstance(value_json, dict) else {}
+
+    @staticmethod
+    def _merge_evidence(existing: Any, incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in list(existing or []) + incoming:
+            if not isinstance(item, dict):
+                continue
+            marker = json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            merged.append(item)
+        return merged
+
+    @staticmethod
+    def _higher_confidence(left: str, right: str) -> str:
+        order = {"low": 0, "medium": 1, "high": 2}
+        return left if order.get(left, 0) >= order.get(right, 0) else right
 
 
 class ConversationSummarizer:
@@ -268,7 +452,7 @@ class MemoryWriteback:
         *,
         repository: Any,
         summarizer: ConversationSummarizer | None = None,
-        extractor: MemoryExtractor | None = None,
+        extractor: Any | None = None,
         policy: MemoryPolicy | None = None,
         writer: MemoryWriter | None = None,
     ) -> None:
@@ -286,7 +470,8 @@ class MemoryWriteback:
         summary = self.summarizer.summarize(state, removable)
         remove_messages = (
             [RemoveMessage(id=str(message.id)) for message in removable]
-            if self.summarizer.can_remove_messages and summary != str(state.get("conversation_summary") or "").strip()
+            if self.summarizer.can_remove_messages
+            and summary != str(state.get("conversation_summary") or "").strip()
             else []
         )
         route = state.get("route") or {}
@@ -300,9 +485,61 @@ class MemoryWriteback:
                 last_entities=route.get("entities") or {},
             )
 
-        for raw_candidate in self.extractor.extract(state):
-            candidate = MemoryCandidate.model_validate(raw_candidate)
+        raw_candidates = self.extractor.extract(state)
+        self._record_tool_audit(
+            "long_term_memory_extract",
+            state,
+            result={"count": len(raw_candidates), "candidates": raw_candidates},
+        )
+
+        for raw_candidate in raw_candidates:
+            candidate = MemoryCandidate.model_validate(normalize_memory_candidate(raw_candidate))
             decision = self.policy.decide(candidate.model_dump())
+            self._record_tool_audit(
+                "memory_policy_decide",
+                state,
+                result={
+                    "key": candidate.key,
+                    "memory_kind": candidate.memory_kind,
+                    "memory_type": candidate.memory_type,
+                    "decision": decision.model_dump(),
+                },
+            )
             self.writer.write(candidate, decision, store)
+            self._record_tool_audit(
+                "memory_write",
+                state,
+                result={
+                    "key": candidate.key,
+                    "memory_kind": candidate.memory_kind,
+                    "memory_type": candidate.memory_type,
+                    "decision": decision.model_dump(),
+                },
+            )
 
         return {"conversation_summary": summary, "messages": remove_messages}
+
+    def _record_tool_audit(
+        self,
+        tool_name: str,
+        state: dict[str, Any],
+        *,
+        result: dict[str, Any],
+    ) -> None:
+        recorder = getattr(self.repository, "record_tool_call", None)
+        if recorder is None:
+            return
+        try:
+            recorder(
+                tool_name=tool_name,
+                arguments={
+                    "conversation_id": state.get("conversation_id"),
+                    "customer_id": state.get("customer_id"),
+                    "request_id": state.get("request_id"),
+                },
+                customer_id=state.get("customer_id"),
+                status=ToolCallStatus.SUCCEEDED.value,
+                result=result,
+            )
+        except Exception:
+            return
