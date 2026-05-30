@@ -1,4 +1,4 @@
-"""Business entities and contracts for the smart customer service application."""
+# 声明领域模型和仓库协议模块包。
 
 from smart_cs.domain.errors import (
     ConversationBusyError,

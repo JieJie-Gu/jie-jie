@@ -1,3 +1,5 @@
+# 测试 AgentRuntime 的 HITL resume、ContextVar 和记忆 checkpoint helper。
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -8,6 +10,7 @@ from typing import Any
 
 from langgraph.types import Command
 
+from smart_cs.agents.state import RuntimeState
 from smart_cs.application.agent_runtime import AgentRuntime
 from smart_cs.tools.agent_tool_wrappers import RuntimeToolContext
 
@@ -166,3 +169,10 @@ def test_write_memory_applies_summary_to_graph_checkpoint() -> None:
             {"conversation_summary": "summary"},
         )
     ]
+
+
+def test_runtime_state_does_not_define_duplicate_message_field() -> None:
+    assert "message" not in RuntimeState.__annotations__
+    assert "messages" in RuntimeState.__annotations__
+    assert "recent_messages" in RuntimeState.__annotations__
+    assert "session_facts" in RuntimeState.__annotations__

@@ -1,3 +1,5 @@
+# 测试 Gradio 演示层的消息和确认交互。
+
 from __future__ import annotations
 
 import importlib.util

@@ -1,3 +1,5 @@
+# 定义客服事实仓库的协议接口。
+
 from contextlib import AbstractContextManager
 from typing import Any, Protocol
 
@@ -65,6 +67,14 @@ class CustomerFactsRepository(Protocol):
     ) -> Message: ...
 
     def latest_message(self, conversation_id: str) -> Message | None: ...
+
+    def list_recent_messages(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]: ...
 
     def search_products(self, query: str) -> list[Product]: ...
 

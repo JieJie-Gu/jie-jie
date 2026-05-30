@@ -1,3 +1,5 @@
+# 提供 API 测试使用的静态知识库 Agent。
+
 from smart_cs.agents.knowledge import Citation, KnowledgeAnswer
 
 

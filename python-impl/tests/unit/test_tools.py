@@ -1,3 +1,5 @@
+# 测试 AuthorizedToolExecutor 的权限、审计、幂等和并发安全。
+
 import os
 import subprocess
 import sys

@@ -1,3 +1,5 @@
+# 实现基于 SQLAlchemy 的客服事实仓库。
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -209,6 +211,34 @@ class SqlRepository:
                 .where(Message.conversation_id == conversation_id)
                 .order_by(Message.created_at.desc(), Message.id.desc())
             )
+
+    def list_recent_messages(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        with self.database.session() as session:
+            self._require_conversation_owner(session, conversation_id, customer_id)
+            statement = (
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(Message.created_at.desc(), Message.id.desc())
+                .limit(limit)
+            )
+            rows = list(session.scalars(statement))
+        return [
+            {
+                "role": row.role,
+                "content": row.content,
+                "content_type": row.content_type,
+                "asset_key": row.asset_key,
+                "visual_evidence": row.visual_evidence,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in reversed(rows)
+        ]
 
     def search_products(self, query: str) -> list[Product]:
         raw_text = query.strip()

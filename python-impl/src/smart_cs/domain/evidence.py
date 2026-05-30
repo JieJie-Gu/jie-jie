@@ -1,3 +1,5 @@
+# 定义对话证据和证据校验相关领域结构。
+
 from pydantic import BaseModel, Field
 
 

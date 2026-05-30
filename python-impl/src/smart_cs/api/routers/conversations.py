@@ -1,3 +1,5 @@
+# 实现会话、图片消息和确认操作的 HTTP 路由。
+
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 
 from smart_cs.api.dependencies import get_service

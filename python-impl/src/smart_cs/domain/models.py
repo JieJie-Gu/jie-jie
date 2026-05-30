@@ -1,3 +1,5 @@
+# 定义客服领域的 SQLAlchemy ORM 数据模型。
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

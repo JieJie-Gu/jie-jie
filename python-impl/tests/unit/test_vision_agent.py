@@ -1,3 +1,5 @@
+# 测试 VisionAgent 的结构化视觉证据输出。
+
 from smart_cs.agents.vision import LangChainVisionModel, VisionAgent
 from smart_cs.domain.evidence import VisualEvidence
 

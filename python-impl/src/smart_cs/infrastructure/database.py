@@ -1,3 +1,5 @@
+# 创建 SQLAlchemy engine、session 和数据库 schema。
+
 from collections.abc import Iterator
 from contextlib import contextmanager
 

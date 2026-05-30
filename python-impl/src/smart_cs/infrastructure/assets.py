@@ -1,3 +1,5 @@
+# 管理上传资源的本地存储和读取。
+
 from __future__ import annotations
 
 from pathlib import Path

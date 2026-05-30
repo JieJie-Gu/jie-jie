@@ -1,3 +1,5 @@
+# 定义订单、动作和工具调用等领域枚举。
+
 from enum import Enum
 
 

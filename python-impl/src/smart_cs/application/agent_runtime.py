@@ -1,3 +1,5 @@
+# 运行客服 supervisor graph，并管理 HITL、租约、上下文和记忆。
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -16,7 +18,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
-from smart_cs.agents.knowledge import KnowledgeAgent
+from smart_cs.agents.knowledge import KnowledgeService
 from smart_cs.agents.state import RuntimeState
 from smart_cs.agents.subagents import create_post_sales_agent, create_pre_sales_agent
 from smart_cs.application.context_builder import RuntimeContextBuilder
@@ -127,7 +129,7 @@ class AgentRuntime:
         executor: AuthorizedToolExecutor,
         chat_model: Any,
         checkpoint_path: str | Path,
-        knowledge_agent: KnowledgeAgent | None = None,
+        knowledge_service: KnowledgeService | None = None,
         policy_engine: PolicyEngine | None = None,
         memory_writeback: MemoryWriteback | None = None,
         context_builder: RuntimeContextBuilder | None = None,
@@ -148,7 +150,7 @@ class AgentRuntime:
 
         self.executor = executor
         self.chat_model = chat_model
-        self.knowledge_agent = knowledge_agent
+        self.knowledge_service = knowledge_service
         self.policy_engine = policy_engine or PolicyEngine()
         self.memory_writeback = memory_writeback
         self.store = memory_store or SqlMemoryStoreAdapter(executor.repository)
@@ -236,10 +238,10 @@ class AgentRuntime:
                         "conversation_id": conversation_id,
                         "customer_id": customer_id,
                         "request_id": request_id,
-                        "message": message,
-                        "has_image": visual_evidence is not None,
                         "visual_evidence": visual_evidence,
                         "asset_key": asset_key,
+                        "recent_messages": runtime_context.get("recent_messages") or [],
+                        "session_facts": runtime_context.get("session_facts") or {},
                         "conversation_summary": runtime_context.get("conversation_summary"),
                         "customer_memories": runtime_context.get("customer_memories") or [],
                         "pending_confirmation": runtime_context.get("pending_confirmation"),
@@ -364,7 +366,7 @@ class AgentRuntime:
             self.chat_model,
             build_pre_sales_tools(
                 self.executor,
-                self.knowledge_agent,
+                self.knowledge_service,
                 self._current_tool_context,
             ),
         )
@@ -372,7 +374,7 @@ class AgentRuntime:
             self.chat_model,
             build_post_sales_tools(
                 self.executor,
-                self.knowledge_agent,
+                self.knowledge_service,
                 self._current_tool_context,
                 self.policy_engine,
             ),
@@ -494,7 +496,7 @@ class AgentRuntime:
         if name == "request_after_sales":
             return draft_after_sales_action(
                 self.executor,
-                self.knowledge_agent,
+                self.knowledge_service,
                 self.policy_engine,
                 ctx,
                 order_id=str(args.get("order_id", "")),

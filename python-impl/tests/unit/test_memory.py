@@ -1,3 +1,5 @@
+# 测试记忆提取、策略分层和摘要写回行为。
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from smart_cs.application.memory import (
@@ -121,6 +123,7 @@ def test_memory_writeback_without_real_summarizer_does_not_emit_remove_messages(
         {
             "conversation_id": "conv-1",
             "customer_id": "C001",
+            "conversation_summary": "old summary",
             "message": "continue",
             "messages": [
                 HumanMessage(id="h1", content="first"),
@@ -132,26 +135,32 @@ def test_memory_writeback_without_real_summarizer_does_not_emit_remove_messages(
         store=RecordingStore(),
     )
 
-    assert update["conversation_summary"]
+    assert update["conversation_summary"] == "old summary"
     assert update["messages"] == []
 
 
 class FakeSummarizer:
+    def __init__(self) -> None:
+        self.payload = None
+
     def invoke(self, _payload):
+        self.payload = _payload
         return AIMessage(content="real summary")
 
 
 def test_memory_writeback_with_real_summarizer_can_emit_remove_messages() -> None:
+    summarizer_model = FakeSummarizer()
     update = MemoryWriteback(
         repository=DummyRepository(),
         summarizer=ConversationSummarizer(
             summary_keep_last=1,
-            summarizer=FakeSummarizer(),
+            summarizer=summarizer_model,
         ),
     ).update(
         {
             "conversation_id": "conv-1",
             "customer_id": "C001",
+            "conversation_summary": "old summary",
             "message": "continue",
             "messages": [
                 HumanMessage(id="h1", content="first"),
@@ -165,3 +174,38 @@ def test_memory_writeback_with_real_summarizer_can_emit_remove_messages() -> Non
     )
 
     assert [message.id for message in update["messages"]] == ["h1", "a1"]
+    assert summarizer_model.payload["existing_summary"] == "old summary"
+    assert "first" in summarizer_model.payload["new_messages"]
+    assert update["conversation_summary"] == "real summary"
+
+
+class FailingSummarizer:
+    def invoke(self, _payload):
+        raise RuntimeError("summary model unavailable")
+
+
+def test_failing_real_summarizer_keeps_old_summary_and_does_not_remove_messages() -> None:
+    update = MemoryWriteback(
+        repository=DummyRepository(),
+        summarizer=ConversationSummarizer(
+            summary_keep_last=1,
+            summarizer=FailingSummarizer(),
+        ),
+    ).update(
+        {
+            "conversation_id": "conv-1",
+            "customer_id": "C001",
+            "conversation_summary": "old summary",
+            "message": "continue",
+            "messages": [
+                HumanMessage(id="h1", content="first"),
+                AIMessage(id="a1", content="second"),
+                HumanMessage(id="h2", content="third"),
+            ],
+            "business_result": {},
+        },
+        store=RecordingStore(),
+    )
+
+    assert update["conversation_summary"] == "old summary"
+    assert update["messages"] == []

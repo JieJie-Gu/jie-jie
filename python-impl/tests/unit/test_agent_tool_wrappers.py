@@ -1,3 +1,5 @@
+# 测试 agent 工具 wrapper 的审计、权限和草稿行为。
+
 from __future__ import annotations
 
 import pytest

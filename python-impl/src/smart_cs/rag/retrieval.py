@@ -1,3 +1,5 @@
+# 实现 RAG 查询策略、检索、重排和上下文组装。
+
 from __future__ import annotations
 
 from typing import Protocol

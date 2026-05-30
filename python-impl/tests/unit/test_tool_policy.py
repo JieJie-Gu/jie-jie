@@ -1,3 +1,5 @@
+# 测试工具策略视图和允许调用方配置。
+
 import pytest
 
 from smart_cs.domain.errors import ToolPermissionError

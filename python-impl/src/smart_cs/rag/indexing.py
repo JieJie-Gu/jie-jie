@@ -1,3 +1,5 @@
+# 解析、切分并准备知识文档索引记录。
+
 from __future__ import annotations
 
 import re

@@ -1,3 +1,5 @@
+# 提取、审核并写入长期记忆候选和会话服务事件。
+
 from __future__ import annotations
 
 import re
@@ -223,19 +225,21 @@ class ConversationSummarizer:
         removed_text = "\n".join(str(message.content) for message in removable)
         business_result = state.get("business_result") or {}
         if self.summarizer is not None and removed_text:
-            response = self.summarizer.invoke(
-                {
-                    "existing_summary": current,
-                    "new_messages": removed_text,
-                    "business_result": business_result,
-                }
-            )
+            try:
+                response = self.summarizer.invoke(
+                    {
+                        "existing_summary": current,
+                        "new_messages": removed_text,
+                        "business_result": business_result,
+                    }
+                )
+            except Exception:
+                return current
             text = getattr(response, "content", str(response))
+        elif business_result:
+            text = current or str(business_result)
         else:
-            parts = [
-                part for part in [current, removed_text, str(business_result) if business_result else ""] if part
-            ]
-            text = "\n".join(parts)
+            text = current
         return text[-self.max_summary_chars:] if text else current
 
 
@@ -260,12 +264,12 @@ class MemoryWriteback:
         customer_id = state["customer_id"]
         messages = list(state.get("messages") or [])
         removable = self.summarizer.removable_messages(messages)
+        summary = self.summarizer.summarize(state, removable)
         remove_messages = (
             [RemoveMessage(id=str(message.id)) for message in removable]
-            if self.summarizer.can_remove_messages
+            if self.summarizer.can_remove_messages and summary != str(state.get("conversation_summary") or "").strip()
             else []
         )
-        summary = self.summarizer.summarize(state, removable)
         route = state.get("route") or {}
         if summary:
             self.repository.upsert_conversation_summary(

@@ -1,3 +1,5 @@
+# 启动 Gradio 演示界面，并适配客服后端 API 交互。
+
 from dataclasses import dataclass
 import json
 from pathlib import Path

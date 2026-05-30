@@ -1,1 +1,1 @@
-"""HTTP API package for the Smart CS application."""
+# 声明 FastAPI API 层模块包。

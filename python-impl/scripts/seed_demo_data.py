@@ -1,3 +1,5 @@
+# 写入演示用客户、商品、订单和知识库数据。
+
 import sys
 from pathlib import Path
 

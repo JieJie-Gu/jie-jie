@@ -1,3 +1,5 @@
+# 测试 Milvus 混合检索集成链路。
+
 from __future__ import annotations
 
 import hashlib

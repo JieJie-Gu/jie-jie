@@ -1,1 +1,1 @@
-"""Smart customer service agent application."""
+# 声明 smart_cs 客服后端应用包。

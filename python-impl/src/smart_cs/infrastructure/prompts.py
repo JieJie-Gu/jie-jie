@@ -1,3 +1,5 @@
+# 集中维护 supervisor、子 Agent 和视觉模型 prompt。
+
 from __future__ import annotations
 
 
@@ -65,4 +67,45 @@ POST_SALES_AGENT_PROMPT = """
 - pending 状态只能说“已生成草稿，等待确认”。
 - 不允许承诺退款成功、退货成功、补偿成功。
 - 缺少订单编号时，直接向用户追问。
+""".strip()
+
+
+SESSION_FACTS_EXTRACTION_PROMPT = """
+你是电商客服会话状态抽取器。
+请只从最近对话、旧 session facts 和 conversation summary 中抽取明确事实。
+不要猜测，不要生成长期用户画像。
+
+需要抽取：
+- 当前意图 current_intent
+- 当前订单号 current_order_id
+- 当前商品 current_product
+- 售后原因 after_sales_reason
+- 用户约束 user_constraints
+- 本轮提到的偏好 user_preferences_mentioned
+- 情绪 emotional_state
+- 缺失槽位 missing_slots
+- 上一次客服追问 last_agent_question
+
+如果信息不存在，字段保持 null 或空列表。
+""".strip()
+
+
+CONVERSATION_ROLLING_SUMMARY_PROMPT = """
+你是电商客服会话摘要器。
+请根据旧摘要和待压缩消息生成 updated summary。
+
+必须保留：
+- 用户当前诉求
+- 订单号
+- 商品名
+- 售后原因
+- 用户已补充的信息
+- 客服已问过的问题
+- pending action
+- 图片证据摘要
+- 未解决问题
+
+不要写无依据推测。
+不要丢失订单号、售后原因、用户约束。
+输出简洁中文摘要。
 """.strip()

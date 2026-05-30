@@ -1,4 +1,4 @@
-"""Declared customer tools and their authorised executor."""
+# 声明业务工具和工具执行层模块包。
 
 from smart_cs.tools.executor import AuthorizedToolExecutor
 

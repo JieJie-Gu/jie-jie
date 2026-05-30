@@ -1,3 +1,5 @@
+# 封装 Milvus 集合管理、写入和混合检索。
+
 from __future__ import annotations
 
 from langchain_core.documents import Document

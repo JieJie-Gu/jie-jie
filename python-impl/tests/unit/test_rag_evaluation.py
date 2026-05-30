@@ -1,3 +1,5 @@
+# 测试 RAG 评估数据加载和指标计算。
+
 import importlib.util
 from pathlib import Path
 

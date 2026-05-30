@@ -1,3 +1,5 @@
+# 加载 RAG 评估用例并计算检索指标。
+
 from __future__ import annotations
 
 from dataclasses import dataclass

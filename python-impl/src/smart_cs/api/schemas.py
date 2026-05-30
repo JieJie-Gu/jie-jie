@@ -1,3 +1,5 @@
+# 定义 HTTP 请求和响应的 Pydantic schema。
+
 from __future__ import annotations
 
 from datetime import datetime

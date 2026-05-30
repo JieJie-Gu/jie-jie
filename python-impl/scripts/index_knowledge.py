@@ -1,3 +1,5 @@
+# 切分知识库文档，并写入向量索引。
+
 from __future__ import annotations
 
 import sys

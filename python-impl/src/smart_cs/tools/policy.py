@@ -1,3 +1,5 @@
+# 定义业务工具风险等级和允许调用方策略。
+
 from __future__ import annotations
 
 from dataclasses import dataclass

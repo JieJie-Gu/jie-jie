@@ -1,3 +1,5 @@
+# 测试图片消息链路中的 vision_evidence 工具审计。
+
 from __future__ import annotations
 
 from smart_cs.application.conversation_service import ConversationService

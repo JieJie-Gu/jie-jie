@@ -1,3 +1,5 @@
+# 测试演示应用依赖项是否可用。
+
 from __future__ import annotations
 
 import tomllib

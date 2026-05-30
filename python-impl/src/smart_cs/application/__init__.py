@@ -1,4 +1,4 @@
-"""Application orchestration for customer service agents."""
+# 声明应用服务层模块包。
 
 from smart_cs.application.agent_runtime import AgentRuntime
 

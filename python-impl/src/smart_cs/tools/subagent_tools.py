@@ -1,9 +1,13 @@
+# 将售前和售后子 Agent 包装成 supervisor 可调用的高级工具。
+
 from __future__ import annotations
 
 from typing import Any
 
 from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import BaseMessage
+
+from smart_cs.agents.state import latest_human_text
 
 
 def make_pre_sales_tool(pre_sales_agent: Any):
@@ -54,7 +58,7 @@ def _subagent_prompt(
     agent_label: str,
     include_visual_context: bool = False,
 ) -> str:
-    original = _latest_human_text(runtime.state.get("messages", []))
+    original = latest_human_text(runtime.state.get("messages", []))
     compact_context = _compact_context_block(runtime.state)
     visual_context = (
         _visual_context_block(runtime.state)
@@ -76,6 +80,29 @@ def _compact_context_block(state: dict[str, Any]) -> str:
     summary = state.get("conversation_summary")
     if summary:
         blocks.append("Conversation summary:\n" + str(summary))
+
+    recent_messages = list(state.get("recent_messages") or [])
+    if recent_messages:
+        lines = ["Recent conversation:"]
+        role_names = {"user": "User", "human": "User", "assistant": "Assistant", "ai": "Assistant"}
+        for message in recent_messages:
+            if not isinstance(message, dict):
+                continue
+            role = role_names.get(str(message.get("role") or "").lower(), str(message.get("role") or "Message"))
+            lines.append(f"- {role}: {message.get('content') or ''}")
+        if len(lines) > 1:
+            blocks.append("\n".join(lines))
+
+    session_facts = state.get("session_facts")
+    if isinstance(session_facts, dict) and any(
+        value not in (None, "", [], {}) for value in session_facts.values()
+    ):
+        lines = ["Session facts:"]
+        for key, value in session_facts.items():
+            if value in (None, "", [], {}):
+                continue
+            lines.append(f"- {key}: {value}")
+        blocks.append("\n".join(lines))
 
     memories = list(state.get("customer_memories") or [])[:5]
     if memories:
@@ -130,15 +157,6 @@ def _float_or_zero(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
-
-
-def _latest_human_text(messages: list[Any]) -> str:
-    for message in reversed(messages):
-        if getattr(message, "type", None) == "human":
-            return _message_text(message)
-        if isinstance(message, dict) and message.get("role") in {"user", "human"}:
-            return str(message.get("content", ""))
-    return ""
 
 
 def _last_message_text(result: dict[str, Any]) -> str:

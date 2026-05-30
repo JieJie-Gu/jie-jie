@@ -1,3 +1,5 @@
+# 封装知识库 RAG 服务和知识回答结果结构。
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -26,7 +28,7 @@ class Citation:
 
 @dataclass(frozen=True)
 class KnowledgeAnswer:
-    """KnowledgeAgent 的标准返回值：答案、证据上下文和引用信息。"""
+    """KnowledgeService 的标准返回值：答案、证据上下文和引用信息。"""
 
     answer: str
     contexts: list[str]
@@ -43,7 +45,7 @@ class KnowledgeAnswer:
         }
 
 
-class KnowledgeAgent:
+class KnowledgeService:
     """从知识库检索规则依据，并生成带引用的可追溯回答。"""
 
     # 没有足够证据时不编造答案，提示用户补充问题信息。
@@ -138,7 +140,7 @@ class KnowledgeAgent:
 
     @classmethod
     def _is_realtime_order_query(cls, query: str) -> bool:
-        """识别实时订单状态类问题，避免 KnowledgeAgent 回答动态业务状态。"""
+        """识别实时订单状态类问题，避免 KnowledgeService 回答动态业务状态。"""
 
         if cls.REALTIME_ORDER_PATTERN.search(query):
             return True
@@ -167,3 +169,6 @@ class KnowledgeAgent:
             if normalized[index : index + 2] not in stop_terms
             and normalized[index : index + 2] not in category_terms
         }
+
+
+KnowledgeAgent = KnowledgeService

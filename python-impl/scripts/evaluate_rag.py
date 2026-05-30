@@ -1,3 +1,5 @@
+# 运行 RAG 检索质量评估，支持在线和离线评估模式。
+
 from __future__ import annotations
 
 import argparse

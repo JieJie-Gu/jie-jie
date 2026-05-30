@@ -1,3 +1,5 @@
+# 提供文本 embedding 模型和离线 hash embedding。
+
 from __future__ import annotations
 
 from langchain_core.embeddings import Embeddings

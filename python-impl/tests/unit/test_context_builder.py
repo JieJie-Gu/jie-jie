@@ -1,9 +1,11 @@
+# 测试运行时上下文中的摘要、active memory 和待确认动作读取。
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
-from smart_cs.application.context_builder import RuntimeContextBuilder
+from smart_cs.application.context_builder import RuntimeContextBuilder, project_recent_messages
 
 
 @dataclass
@@ -43,6 +45,37 @@ class DummyRepository:
         assert customer_id == "C001"
         return Pending()
 
+    def list_recent_messages(self, conversation_id: str, customer_id: str, *, limit: int = 10):
+        assert conversation_id == "conv-1"
+        assert customer_id == "C001"
+        assert limit == 10
+        return [
+            {
+                "role": "user",
+                "content": "我买的鞋开胶了，想售后",
+                "content_type": "text",
+                "asset_key": None,
+                "visual_evidence": None,
+                "created_at": "2026-05-30T10:00:00",
+            },
+            {
+                "role": "assistant",
+                "content": "请提供订单号",
+                "content_type": "text",
+                "asset_key": None,
+                "visual_evidence": None,
+                "created_at": "2026-05-30T10:01:00",
+            },
+            {
+                "role": "user",
+                "content": "O1001",
+                "content_type": "text",
+                "asset_key": None,
+                "visual_evidence": None,
+                "created_at": "2026-05-30T10:02:00",
+            },
+        ]
+
 
 class RecordingMemoryStore:
     def __init__(self) -> None:
@@ -74,6 +107,11 @@ def test_context_builder_reads_summary_active_memories_and_pending_action() -> N
 
     assert store.namespaces == [("customer", "C001", "memories")]
     assert context["conversation_summary"] == "User asked about order O1001 earlier."
+    assert [message["content"] for message in context["recent_messages"]] == [
+        "我买的鞋开胶了，想售后",
+        "请提供订单号",
+        "O1001",
+    ]
     assert context["customer_memories"][0]["title"] == "Shoe size preference"
     assert context["pending_confirmation"]["action_id"] == "A1"
 
@@ -90,7 +128,42 @@ def test_context_builder_formats_compact_system_context() -> None:
     text = builder.system_message(context)
 
     assert "Conversation summary:" in text
+    assert "Recent conversation:" in text
+    assert "User: 我买的鞋开胶了，想售后" in text
+    assert "Assistant: 请提供订单号" in text
     assert "Active customer memories:" in text
     assert "Shoe size preference" in text
     assert "Pending confirmation:" in text
     assert "A1" in text
+
+
+def test_project_recent_messages_truncates_and_projects_visual_evidence() -> None:
+    rows = [
+        {
+            "role": "user",
+            "content": "x" * 350,
+            "content_type": "text",
+            "asset_key": None,
+            "visual_evidence": None,
+            "created_at": "t1",
+        },
+        {
+            "role": "user",
+            "content": "",
+            "content_type": "image",
+            "asset_key": "conv-1/evidence.jpg",
+            "visual_evidence": {
+                "summary": "鞋底开胶图片",
+                "confidence": 0.91,
+                "needs_clarification": False,
+            },
+            "created_at": "t2",
+        },
+    ]
+
+    projected = project_recent_messages(rows, max_item_chars=300)
+
+    assert len(projected[0]["content"]) == 300
+    assert projected[1]["content"] == "用户上传了图片"
+    assert projected[1]["visual_evidence"]["summary"] == "鞋底开胶图片"
+    assert projected[1]["visual_evidence"]["usable_for_draft"] is True

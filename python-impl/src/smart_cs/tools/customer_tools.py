@@ -1,3 +1,5 @@
+# 声明客服业务工具的 LangChain schema。
+
 from langchain.tools import tool
 
 

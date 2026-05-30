@@ -1,3 +1,5 @@
+# 测试 supervisor 高级子 Agent 工具的上下文传递。
+
 from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -27,6 +29,17 @@ class FakeRuntimeWithCompactContext:
     state = {
         "messages": [HumanMessage(content="订单 O1001 鞋底开胶，帮我申请售后")],
         "conversation_summary": "User previously asked about order O1001.",
+        "recent_messages": [
+            {"role": "user", "content": "我买的鞋开胶了，想售后"},
+            {"role": "assistant", "content": "请提供订单号"},
+            {"role": "user", "content": "O1001"},
+        ],
+        "session_facts": {
+            "current_intent": "after_sales",
+            "current_order_id": "O1001",
+            "after_sales_reason": "鞋底开胶",
+            "missing_slots": [],
+        },
         "customer_memories": [
             {
                 "memory_id": "M1",
@@ -107,6 +120,12 @@ def test_post_sales_tool_injects_summary_memories_and_pending_context() -> None:
     prompt = agent.payload["messages"][0]["content"]
     assert "Conversation summary:" in prompt
     assert "User previously asked about order O1001." in prompt
+    assert "Recent conversation:" in prompt
+    assert "User: 我买的鞋开胶了，想售后" in prompt
+    assert "Assistant: 请提供订单号" in prompt
+    assert "Session facts:" in prompt
+    assert "current_order_id: O1001" in prompt
+    assert "after_sales_reason: 鞋底开胶" in prompt
     assert "Active customer memories:" in prompt
     assert "Shoe size preference" in prompt
     assert "Usually wears size 42." in prompt

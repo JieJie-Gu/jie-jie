@@ -1,3 +1,5 @@
+# 测试服务健康检查接口。
+
 from fastapi.testclient import TestClient
 from smart_cs.main import app
 

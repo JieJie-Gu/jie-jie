@@ -1,3 +1,5 @@
+# 将底层业务能力包装成可执行 LangChain 工具。
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -8,7 +10,7 @@ from typing import Any
 
 from langchain.tools import tool
 
-from smart_cs.agents.knowledge import KnowledgeAgent
+from smart_cs.agents.knowledge import KnowledgeService
 from smart_cs.application.policy import PolicyEngine
 from smart_cs.domain.enums import ToolCallStatus
 from smart_cs.domain.errors import ToolPermissionError
@@ -35,14 +37,14 @@ ContextProvider = Callable[[], RuntimeToolContext]
 
 def build_pre_sales_tools(
     executor: AuthorizedToolExecutor,
-    knowledge_agent: KnowledgeAgent | None,
+    knowledge_service: KnowledgeService | None,
     context_provider: ContextProvider,
 ) -> list[Any]:
     return [
         make_search_products_tool(executor, context_provider, caller_agent="PreSalesAgent"),
         make_knowledge_rag_tool(
             executor,
-            knowledge_agent,
+            knowledge_service,
             context_provider,
             caller_agent="PreSalesAgent",
         ),
@@ -51,7 +53,7 @@ def build_pre_sales_tools(
 
 def build_post_sales_tools(
     executor: AuthorizedToolExecutor,
-    knowledge_agent: KnowledgeAgent | None,
+    knowledge_service: KnowledgeService | None,
     context_provider: ContextProvider,
     policy_engine: PolicyEngine,
 ) -> list[Any]:
@@ -59,13 +61,13 @@ def build_post_sales_tools(
         make_lookup_order_tool(executor, context_provider),
         make_knowledge_rag_tool(
             executor,
-            knowledge_agent,
+            knowledge_service,
             context_provider,
             caller_agent="PostSalesAgent",
         ),
         make_request_after_sales_tool(
             executor,
-            knowledge_agent,
+            knowledge_service,
             context_provider,
             policy_engine,
         ),
@@ -118,7 +120,7 @@ def make_lookup_order_tool(executor: AuthorizedToolExecutor, context_provider: C
 
 def make_knowledge_rag_tool(
     executor: AuthorizedToolExecutor,
-    knowledge_agent: KnowledgeAgent | None,
+    knowledge_service: KnowledgeService | None,
     context_provider: ContextProvider,
     *,
     caller_agent: str,
@@ -130,7 +132,7 @@ def make_knowledge_rag_tool(
         ctx = context_provider()
         return run_knowledge_rag(
             executor,
-            knowledge_agent,
+            knowledge_service,
             ctx,
             query=query,
             caller_agent=caller_agent,
@@ -141,7 +143,7 @@ def make_knowledge_rag_tool(
 
 def make_request_after_sales_tool(
     executor: AuthorizedToolExecutor,
-    knowledge_agent: KnowledgeAgent | None,
+    knowledge_service: KnowledgeService | None,
     context_provider: ContextProvider,
     policy_engine: PolicyEngine,
 ):
@@ -152,7 +154,7 @@ def make_request_after_sales_tool(
         ctx = context_provider()
         draft = draft_after_sales_action(
             executor,
-            knowledge_agent,
+            knowledge_service,
             policy_engine,
             ctx,
             order_id=order_id,
@@ -194,7 +196,7 @@ def make_request_handoff_tool(
 
 def draft_after_sales_action(
     executor: AuthorizedToolExecutor,
-    knowledge_agent: KnowledgeAgent | None,
+    knowledge_service: KnowledgeService | None,
     policy_engine: PolicyEngine,
     ctx: RuntimeToolContext,
     *,
@@ -213,7 +215,7 @@ def draft_after_sales_action(
     )
     knowledge_result = run_knowledge_rag(
         executor,
-        knowledge_agent,
+        knowledge_service,
         ctx,
         query=f"售后政策 {reason}",
         caller_agent="PostSalesAgent",
@@ -271,7 +273,7 @@ def draft_handoff_action(
 
 def run_knowledge_rag(
     executor: AuthorizedToolExecutor,
-    knowledge_agent: KnowledgeAgent | None,
+    knowledge_service: KnowledgeService | None,
     ctx: RuntimeToolContext,
     *,
     query: str,
@@ -285,7 +287,7 @@ def run_knowledge_rag(
     }
     started = perf_counter()
     try:
-        if knowledge_agent is None:
+        if knowledge_service is None:
             result = {
                 "status": "knowledge_unavailable",
                 "answer": "知识库未启用，无法提供政策依据。",
@@ -293,7 +295,7 @@ def run_knowledge_rag(
                 "citations": [],
             }
         else:
-            result = knowledge_agent.answer(query).as_result()
+            result = knowledge_service.answer(query).as_result()
     except Exception as error:
         executor.repository.record_tool_call(
             tool_name="knowledge_rag",

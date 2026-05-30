@@ -1,3 +1,5 @@
+# 编排消息持久化、图片预处理和 AgentRuntime 调用。
+
 from __future__ import annotations
 
 import base64

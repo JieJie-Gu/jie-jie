@@ -1,3 +1,5 @@
+# 从用户图片中提取结构化视觉证据。
+
 from __future__ import annotations
 
 from typing import Any, Protocol

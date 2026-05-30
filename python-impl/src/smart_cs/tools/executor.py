@@ -1,3 +1,5 @@
+# 在权限、审计、turn fence 和幂等约束下执行业务工具。
+
 from __future__ import annotations
 
 from collections.abc import Callable
