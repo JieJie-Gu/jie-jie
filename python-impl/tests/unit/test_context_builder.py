@@ -104,6 +104,25 @@ class RecordingMemoryStore:
         ]
 
 
+class RecordingMemoryRetrieval:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def search_active_memories(self, **kwargs):
+        self.calls.append(kwargs)
+        return [
+            {
+                "memory_id": "preference:shoe_size",
+                "memory_kind": "semantic",
+                "memory_type": "preference",
+                "title": "Shoe size preference",
+                "description": "Usually wears size 42.",
+                "confidence": "high",
+                "score": 1.0,
+            }
+        ]
+
+
 def test_context_builder_reads_summary_active_memories_and_pending_action() -> None:
     store = RecordingMemoryStore()
     context = RuntimeContextBuilder(DummyRepository(), store).build(
@@ -121,6 +140,32 @@ def test_context_builder_reads_summary_active_memories_and_pending_action() -> N
     ]
     assert context["customer_memories"][0]["title"] == "Shoe size preference"
     assert context["pending_confirmation"]["action_id"] == "A1"
+
+
+def test_context_builder_uses_injected_memory_retrieval_service() -> None:
+    retrieval = RecordingMemoryRetrieval()
+    context = RuntimeContextBuilder(
+        DummyRepository(),
+        RecordingMemoryStore(),
+        memory_retrieval=retrieval,
+    ).build(
+        conversation_id="conv-1",
+        customer_id="C001",
+        message="need after-sales",
+    )
+
+    assert context["customer_memories"][0]["memory_id"] == "preference:shoe_size"
+    assert retrieval.calls == [
+        {
+            "customer_id": "C001",
+            "query": "need after-sales",
+            "intent": context["session_facts"].get("current_intent"),
+            "limit": 5,
+            "max_chars": 1200,
+        }
+    ]
+    assert "value" not in context["customer_memories"][0]
+    assert "evidence" not in context["customer_memories"][0]
 
 
 def test_context_builder_formats_compact_system_context() -> None:

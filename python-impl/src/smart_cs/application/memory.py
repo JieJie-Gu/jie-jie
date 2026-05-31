@@ -23,6 +23,8 @@ class MemoryStoreProtocol(Protocol):
 
     def get(self, namespace: tuple[str, str, str], key: str) -> Any | None: ...
 
+    def get_by_id(self, memory_id: str) -> Any | None: ...
+
     def search(self, namespace: tuple[str, str, str], query: str, limit: int) -> list[Any]: ...
 
 
@@ -262,6 +264,12 @@ class SqlMemoryStoreAdapter:
             return None
         return getter(namespace, key)
 
+    def get_by_id(self, memory_id: str) -> Any | None:
+        getter = getattr(self.repository, "get_memory_by_id", None)
+        if getter is None:
+            return None
+        return getter(memory_id)
+
     def search(self, namespace: tuple[str, str, str], query: str, limit: int) -> list[Any]:
         return self.repository.search_memories(namespace, query=query, limit=limit)
 
@@ -288,7 +296,7 @@ class SqlMemoryStoreAdapter:
             else:
                 self.memory_index.delete(payload)
         except Exception:
-            LOGGER.debug("Unable to sync memory vector index", exc_info=True)
+            LOGGER.warning("Unable to sync memory vector index", exc_info=True)
 
 
 def key_from_record(record: Any, value: dict[str, Any]) -> str:

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import json
 import logging
 from typing import Any, Protocol
 
@@ -20,13 +19,20 @@ LOGGER = logging.getLogger(__name__)
 class MemoryStoreProtocol(Protocol):
     def get(self, namespace: tuple[str, str, str], key: str) -> Any | None: ...
 
+    def get_by_id(self, memory_id: str) -> Any | None: ...
+
     def search(self, namespace: tuple[str, str, str], query: str, limit: int) -> list[Any]: ...
 
 
 class MemoryVectorStoreProtocol(Protocol):
     def add_documents(self, documents: list[Document], **kwargs: Any) -> list[str]: ...
 
-    def delete(self, ids: list[str] | None = None, expr: str | None = None, **kwargs: Any) -> bool | None: ...
+    def delete(
+        self,
+        ids: list[str] | None = None,
+        expr: str | None = None,
+        **kwargs: Any,
+    ) -> bool | None: ...
 
     def similarity_search(self, query: str, **kwargs: Any) -> list[Document]: ...
 
@@ -42,42 +48,75 @@ class MemoryVectorIndex:
         if is_indexable_memory(memory):
             self.upsert(memory)
         else:
-            self.delete(memory)
+            self.delete(memory, ignore_not_found=True)
 
     def upsert(self, memory: dict[str, Any]) -> None:
         document = memory_index_document(memory)
         memory_id = str(document.metadata["memory_id"])
-        self.delete(memory)
+        if not self.delete(memory, ignore_not_found=True):
+            raise RuntimeError("Unable to delete stale memory vector before upsert")
         self.store.add_documents([document], ids=[memory_id])
 
-    def delete(self, memory: dict[str, Any]) -> None:
+    def delete(self, memory: dict[str, Any], *, ignore_not_found: bool = False) -> bool:
         memory_id = str(memory.get("memory_id") or memory.get("id") or "")
         if not memory_id:
-            return
+            return True
         try:
-            self.store.delete(ids=[memory_id])
-        except Exception:
-            LOGGER.debug("Unable to delete memory vector by id", exc_info=True)
+            result = self.store.delete(ids=[memory_id])
+        except Exception as error:
+            if ignore_not_found and _is_not_found_error(error):
+                return True
+            raise
+        return result is not False
+
+    def rebuild_from_records(self, records: list[Any]) -> int:
+        count = 0
+        for record in records:
+            memory = memory_record_to_dict(record)
+            if not is_indexable_memory(memory):
+                continue
+            self.upsert(memory)
+            count += 1
+        return count
+
+    def clear_customer(self, customer_id: str | None = None) -> bool:
+        expression = (
+            f'customer_id == "{_escape_expr(customer_id)}"'
+            if customer_id is not None
+            else 'namespace != ""'
+        )
+        try:
+            result = self.store.delete(expr=expression)
+        except Exception as error:
+            if _is_not_found_error(error):
+                return True
+            raise
+        return result is not False
 
     def search(self, *, customer_id: str, query: str, limit: int) -> list[Document]:
         namespace = f"customer/{customer_id}/memories"
         expression = (
             f'customer_id == "{_escape_expr(customer_id)}" '
             f'and namespace == "{_escape_expr(namespace)}" '
-            'and review_status == "approved"'
+            'and review_status == "approved" '
+            'and risk_level != "high" '
+            'and confidence != "low" '
+            'and memory_type != "sensitive_label" '
+            'and memory_type != "risk_event" '
+            'and memory_type != "badcase_candidate"'
         )
         return self.store.similarity_search(
             query,
             k=limit,
             expr=expression,
-            fetch_k=max(limit * 2, 20),
+            fetch_k=max(limit * 4, 50),
             ranker_type="rrf",
             ranker_params={"k": 60},
         )
 
 
 class MemoryRetrievalService:
-    """Searches active customer memories through vector recall with SQL fallback."""
+    """Searches active customer memories through vector recall plus SQL fallback."""
 
     def __init__(
         self,
@@ -99,16 +138,20 @@ class MemoryRetrievalService:
         limit: int = 5,
         max_chars: int = 1200,
     ) -> list[dict[str, Any]]:
-        used_vector = self.vector_index is not None
-        records = self._vector_records(customer_id, query, limit)
-        if not records:
-            records = self._sql_records(customer_id, query, limit)
-            used_vector = False
-        selected = self._select(records, query=query, intent=intent, limit=limit, max_chars=max_chars)
-        if not selected and used_vector:
-            records = self._sql_records(customer_id, query, limit)
-            selected = self._select(records, query=query, intent=intent, limit=limit, max_chars=max_chars)
-        return selected
+        vector_records = self._vector_records(customer_id, query, limit)
+        sql_records = self._sql_records(customer_id, query, limit)
+        records = self._merge_records(vector_records, sql_records)
+        return self._select(records, query=query, intent=intent, limit=limit, max_chars=max_chars)
+
+    def rebuild_index(self, customer_id: str | None = None) -> int:
+        if self.vector_index is None:
+            return 0
+        repository = getattr(self.memory_store, "repository", None)
+        list_records = getattr(repository, "list_indexable_memories", None)
+        if list_records is None:
+            return 0
+        self.vector_index.clear_customer(customer_id)
+        return self.vector_index.rebuild_from_records(list_records(customer_id=customer_id))
 
     def _select(
         self,
@@ -144,20 +187,51 @@ class MemoryRetrievalService:
                 limit=max(limit * 4, 20),
             )
         except Exception:
-            LOGGER.debug("Memory vector search failed; falling back to SQL", exc_info=True)
+            LOGGER.warning("Memory vector search failed; falling back to SQL", exc_info=True)
             return []
         for document in documents:
+            memory_id = str(document.metadata.get("memory_id") or "")
             key = str(document.metadata.get("key") or "")
-            if not key or key in seen:
+            marker = memory_id or f"{namespace}:{key}"
+            if not marker or marker in seen:
                 continue
-            seen.add(key)
-            getter = getattr(self.memory_store, "get", None)
-            if getter is None:
-                continue
-            record = getter(namespace, key)
-            if record is not None:
+            seen.add(marker)
+            record = self._hydrate_vector_hit(
+                namespace=namespace,
+                memory_id=memory_id,
+                key=key,
+            )
+            if record is not None and self._allowed_hydrated_record(record, customer_id):
                 records.append(record)
         return records
+
+    def _hydrate_vector_hit(
+        self,
+        *,
+        namespace: tuple[str, str, str],
+        memory_id: str,
+        key: str,
+    ) -> Any | None:
+        if memory_id:
+            getter_by_id = getattr(self.memory_store, "get_by_id", None)
+            if getter_by_id is None:
+                return None
+            return getter_by_id(memory_id)
+        if not key:
+            return None
+        getter = getattr(self.memory_store, "get", None)
+        if getter is None:
+            return None
+        return getter(namespace, key)
+
+    @staticmethod
+    def _allowed_hydrated_record(record: Any, customer_id: str) -> bool:
+        memory = memory_record_to_dict(record)
+        return (
+            memory.get("namespace") == f"customer/{customer_id}/memories"
+            and memory.get("owner_id") == customer_id
+            and is_indexable_memory(memory)
+        )
 
     def _sql_records(self, customer_id: str, query: str, limit: int) -> list[Any]:
         namespace = ("customer", customer_id, "memories")
@@ -165,6 +239,22 @@ class MemoryRetrievalService:
         if search is None:
             return []
         return search(namespace, query=query, limit=max(limit * 4, 20))
+
+    @staticmethod
+    def _merge_records(*record_groups: list[Any]) -> list[Any]:
+        merged: list[Any] = []
+        seen: set[str] = set()
+        for group in record_groups:
+            for record in group:
+                memory = memory_record_to_dict(record)
+                marker = str(memory.get("memory_id") or memory.get("id") or "")
+                if not marker:
+                    marker = f"{memory.get('namespace') or ''}:{memory.get('key') or ''}"
+                if not marker or marker in seen:
+                    continue
+                seen.add(marker)
+                merged.append(record)
+        return merged
 
 
 def memory_index_document(memory: dict[str, Any]) -> Document:
@@ -179,7 +269,7 @@ def memory_index_document(memory: dict[str, Any]) -> Document:
             str(memory.get("description") or ""),
             str(memory.get("memory_kind") or ""),
             str(memory.get("memory_type") or ""),
-            json.dumps(memory.get("value") or {}, ensure_ascii=False, default=str),
+            compact_memory_value_for_index(memory),
         ]
         if part
     )
@@ -193,10 +283,38 @@ def memory_index_document(memory: dict[str, Any]) -> Document:
             "memory_kind": str(memory.get("memory_kind") or ""),
             "memory_type": str(memory.get("memory_type") or ""),
             "review_status": str(memory.get("review_status") or ""),
+            "risk_level": str(memory.get("risk_level") or ""),
+            "confidence": str(memory.get("confidence") or ""),
             "expires_at": str(memory.get("expires_at") or ""),
             "updated_at": str(memory.get("updated_at") or ""),
         },
     )
+
+
+def compact_memory_value_for_index(memory: dict[str, Any]) -> str:
+    value = memory.get("value")
+    if not isinstance(value, dict) or _has_forbidden_index_payload(value):
+        return ""
+    memory_kind = str(memory.get("memory_kind") or "")
+    memory_type = str(memory.get("memory_type") or "")
+    if memory_kind == "episodic":
+        return _compact_allowed_pairs(
+            value,
+            {"order_id", "action_type", "status", "issue", "ticket_id"},
+        )
+    if memory_type == "preference":
+        if {"attribute", "value", "unit"} & set(value):
+            return _compact_allowed_pairs(value, {"attribute", "value", "unit"})
+        return _compact_scalar_attributes(value)
+    if memory_type == "profile":
+        if {"field", "value", "unit"} & set(value):
+            return _compact_allowed_pairs(value, {"field", "value", "unit"})
+        return _compact_scalar_attributes(value)
+    if memory_type == "constraint":
+        if {"constraint_type", "constraint_value", "unit"} & set(value):
+            return _compact_allowed_pairs(value, {"constraint_type", "constraint_value", "unit"})
+        return _compact_scalar_attributes(value)
+    return ""
 
 
 def is_indexable_memory(memory: dict[str, Any]) -> bool:
@@ -246,6 +364,43 @@ def memory_record_to_dict(record: Any) -> dict[str, Any]:
     return {key: value for key, value in memory.items() if value is not None}
 
 
+def _has_forbidden_index_payload(value: dict[str, Any]) -> bool:
+    forbidden = {
+        "evidence",
+        "before_json",
+        "after_json",
+        "business_result",
+        "raw_tool_result",
+        "memory_decision",
+        "review_payload",
+        "proposed_value",
+        "previous_value",
+        "conflict_with",
+    }
+    return bool(value.get("conflict")) or any(key in value for key in forbidden)
+
+
+def _compact_allowed_pairs(value: dict[str, Any], allowed: set[str]) -> str:
+    parts = []
+    for key in sorted(allowed):
+        item = value.get(key)
+        if _is_scalar(item):
+            parts.append(f"{key}: {item}")
+    return "; ".join(parts)
+
+
+def _compact_scalar_attributes(value: dict[str, Any]) -> str:
+    parts = []
+    for key, item in value.items():
+        if _is_scalar(item):
+            parts.append(f"attribute: {key}; value: {item}")
+    return "; ".join(parts[:5])
+
+
+def _is_scalar(value: Any) -> bool:
+    return isinstance(value, (str, int, float, bool))
+
+
 def _set_datetime(memory: dict[str, Any], key: str, value: Any) -> None:
     if value is None or memory.get(key):
         return
@@ -266,3 +421,8 @@ def _is_expired(value: Any) -> bool:
 
 def _escape_expr(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _is_not_found_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return "not found" in text or "not exist" in text or "does not exist" in text

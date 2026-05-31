@@ -88,6 +88,15 @@ class CustomerFactsRepository(Protocol):
 
     def get_memory(self, namespace: tuple[str, str, str], key: str) -> MemoryRecord | None: ...
 
+    def get_memory_by_id(self, memory_id: str) -> MemoryRecord | None: ...
+
+    def list_indexable_memories(
+        self,
+        *,
+        customer_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[MemoryRecord]: ...
+
     def list_memory_candidates(
         self,
         *,

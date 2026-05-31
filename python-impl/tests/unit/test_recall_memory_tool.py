@@ -176,6 +176,8 @@ def test_recall_memory_long_term_uses_shared_retrieval_service() -> None:
     )
 
     assert result["long_term"]["semantic_memories"][0]["memory_id"] == "preference:shoe_size"
+    assert "value" not in result["long_term"]["semantic_memories"][0]
+    assert "evidence" not in result["long_term"]["semantic_memories"][0]
     assert retrieval.calls == [
         {
             "customer_id": "C001",

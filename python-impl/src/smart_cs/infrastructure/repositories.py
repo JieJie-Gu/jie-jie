@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+import logging
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -35,6 +37,9 @@ from smart_cs.domain.models import (
     utc_now,
 )
 from smart_cs.infrastructure.database import Database
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SqlRepository:
@@ -602,6 +607,10 @@ class SqlRepository:
         with self.transaction() as session:
             return session.get(MemoryRecord, memory_id)
 
+    def get_memory_by_id(self, memory_id: str) -> MemoryRecord | None:
+        with self.transaction() as session:
+            return session.get(MemoryRecord, memory_id)
+
     def search_memories(
         self, namespace: tuple[str, str, str], query: str, limit: int
     ) -> list[MemoryRecord]:
@@ -610,10 +619,56 @@ class SqlRepository:
             statement = (
                 select(MemoryRecord)
                 .where(MemoryRecord.namespace == namespace_text)
+                .where(MemoryRecord.review_status == "approved")
+                .where(MemoryRecord.risk_level != "high")
+                .where(MemoryRecord.confidence != "low")
+                .where(MemoryRecord.memory_type.notin_(
+                    ["sensitive_label", "risk_event", "badcase_candidate"]
+                ))
                 .order_by(MemoryRecord.updated_at.desc(), MemoryRecord.id.desc())
-                .limit(limit)
+                .limit(max(limit * 10, 200))
             )
-            return list(session.scalars(statement))
+            records = [
+                record for record in session.scalars(statement)
+                if self._memory_not_expired(record)
+            ]
+        ranked = sorted(
+            records,
+            key=lambda record: (
+                self._memory_search_score(record, query),
+                record.updated_at or datetime.min,
+                record.id,
+            ),
+            reverse=True,
+        )
+        return ranked[:limit]
+
+    def list_indexable_memories(
+        self,
+        *,
+        customer_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[MemoryRecord]:
+        with self.transaction() as session:
+            statement = (
+                select(MemoryRecord)
+                .where(MemoryRecord.review_status == "approved")
+                .where(MemoryRecord.namespace.like("customer/%/memories"))
+                .where(MemoryRecord.risk_level != "high")
+                .where(MemoryRecord.confidence != "low")
+                .where(MemoryRecord.memory_type.notin_(
+                    ["sensitive_label", "risk_event", "badcase_candidate"]
+                ))
+                .order_by(MemoryRecord.updated_at.desc(), MemoryRecord.id.desc())
+            )
+            if customer_id is not None:
+                statement = statement.where(MemoryRecord.namespace == f"customer/{customer_id}/memories")
+            if limit is not None:
+                statement = statement.limit(limit)
+            return [
+                record for record in session.scalars(statement)
+                if self._memory_not_expired(record)
+            ]
 
     def list_memory_candidates(
         self,
@@ -699,6 +754,7 @@ class SqlRepository:
             session.flush()
             after = self._memory_record_result(active)
             self._sync_memory_index_record(active)
+            self._sync_memory_index_record(candidate)
             self.record_tool_call(
                 tool_name="memory_review",
                 arguments={
@@ -760,7 +816,7 @@ class SqlRepository:
         try:
             index.sync_record(record)
         except Exception:
-            return
+            LOGGER.warning("Unable to sync memory vector index", exc_info=True)
 
     @staticmethod
     def _memory_record_result(record: MemoryRecord) -> dict[str, Any]:
@@ -793,6 +849,96 @@ class SqlRepository:
             return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         except ValueError:
             return None
+
+    @staticmethod
+    def _memory_not_expired(record: MemoryRecord) -> bool:
+        if record.expires_at is None:
+            return True
+        expires_at = record.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return expires_at > datetime.now(UTC)
+
+    @classmethod
+    def _memory_search_score(cls, record: MemoryRecord, query: str) -> float:
+        query_text = str(query or "").lower()
+        if not query_text:
+            return 0.0
+        haystack = " ".join(
+            [
+                record.title,
+                record.description,
+                record.memory_type,
+                cls._compact_memory_value_for_search(record.value_json),
+            ]
+        ).lower()
+        token_score = cls._token_overlap(query_text, haystack)
+        ngram_score = max(
+            cls._ngram_overlap(query_text, haystack, 2),
+            cls._ngram_overlap(query_text, haystack, 3),
+        )
+        char_score = cls._cjk_char_overlap(query_text, haystack)
+        return max(token_score, ngram_score, char_score)
+
+    @staticmethod
+    def _compact_memory_value_for_search(value: dict[str, Any]) -> str:
+        if not isinstance(value, dict):
+            return ""
+        nested = value.get("value")
+        if isinstance(nested, dict):
+            value = nested
+        parts: list[str] = []
+        for key, item in value.items():
+            if key in {
+                "evidence",
+                "before_json",
+                "after_json",
+                "business_result",
+                "raw_tool_result",
+                "memory_decision",
+                "review_payload",
+                "proposed_value",
+                "previous_value",
+                "conflict_with",
+            }:
+                continue
+            if isinstance(item, (str, int, float, bool)):
+                parts.append(f"{key} {item}")
+        return " ".join(parts[:8])
+
+    @staticmethod
+    def _token_overlap(query: str, haystack: str) -> float:
+        tokens = re.findall(r"[a-z0-9]+", query.lower())
+        if not tokens:
+            return 0.0
+        hits = sum(1 for token in tokens if token in haystack)
+        return min(1.0, hits / len(tokens))
+
+    @classmethod
+    def _ngram_overlap(cls, query: str, haystack: str, n: int) -> float:
+        query_compact = re.sub(r"\s+", "", query.lower())
+        haystack_compact = re.sub(r"\s+", "", haystack.lower())
+        grams = cls._ngrams(query_compact, n)
+        if not grams:
+            return 0.0
+        hits = sum(1 for gram in grams if gram in haystack_compact)
+        return min(1.0, hits / len(grams))
+
+    @staticmethod
+    def _cjk_char_overlap(query: str, haystack: str) -> float:
+        chars = {char for char in query if "\u4e00" <= char <= "\u9fff"}
+        if not chars:
+            return 0.0
+        hits = sum(1 for char in chars if char in haystack)
+        return min(1.0, hits / len(chars))
+
+    @staticmethod
+    def _ngrams(text: str, n: int) -> set[str]:
+        if not text:
+            return set()
+        if len(text) <= n:
+            return {text}
+        return {text[index : index + n] for index in range(0, len(text) - n + 1)}
 
     @staticmethod
     def _claim_conversation(session: Session, conversation_id: str, customer_id: str) -> Conversation:
