@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from smart_cs.application.memory_selector import MemoryContextSelector
+from smart_cs.application.memory import MemoryCandidate, MemoryDecision, MemoryWriter
 from smart_cs.domain.enums import ToolCallStatus
 from smart_cs.tools.agent_tool_wrappers import RuntimeToolContext, run_recall_memory
 from smart_cs.tools.policy import default_tool_registry
@@ -60,6 +61,24 @@ class FakeMemoryStore:
         ]
 
 
+class WritableMemoryStore:
+    def __init__(self) -> None:
+        self.records = {}
+
+    def put(self, namespace, key, value) -> None:
+        self.records[(namespace, key)] = value
+
+    def get(self, namespace, key):
+        return self.records.get((namespace, key))
+
+    def search(self, namespace, query: str, limit: int):
+        return [
+            value
+            for (stored_namespace, _key), value in self.records.items()
+            if stored_namespace == namespace
+        ][:limit]
+
+
 def test_recall_memory_returns_short_and_long_term_memory_and_audits() -> None:
     executor = FakeExecutor()
     ctx = RuntimeToolContext(
@@ -115,3 +134,48 @@ def test_recall_memory_short_term_scope_does_not_search_long_term() -> None:
 
     assert "short_term" in result
     assert "long_term" not in result
+
+
+def test_after_sales_event_written_to_customer_memories_is_recalled_as_episodic() -> None:
+    store = WritableMemoryStore()
+    MemoryWriter().write(
+        MemoryCandidate(
+            scope="customer",
+            owner_id="C001",
+            memory_kind="episodic",
+            memory_type="after_sales_event",
+            key="episode:after_sales_event:A1:submitted",
+            title="\u552e\u540e\u4e8b\u4ef6",
+            description="\u7528\u6237\u63d0\u4ea4\u8ba2\u5355 O1001 \u978b\u5e95\u5f00\u80f6\u552e\u540e",
+            value={"action_id": "A1", "order_id": "O1001"},
+            evidence=[{"action_id": "A1"}],
+            source="tool_result",
+            confidence="high",
+            risk_level="low",
+            review_status="approved",
+        ),
+        MemoryDecision(action="write", reason="approved_episodic_memory"),
+        store,
+    )
+    executor = FakeExecutor()
+    ctx = RuntimeToolContext(
+        conversation_id="conv-1",
+        customer_id="C001",
+        request_id="req-1",
+        turn_fence=None,
+        runtime_context={"session_facts": {"current_intent": "after_sales"}},
+        memory_store=store,
+        memory_selector=MemoryContextSelector(),
+    )
+
+    result = run_recall_memory(
+        executor,
+        ctx,
+        query="\u552e\u540e O1001",
+        scope="long_term",
+        caller_agent="PostSalesAgent",
+    )
+
+    assert result["long_term"]["episodic_memories"][0]["memory_id"] == (
+        "episode:after_sales_event:A1:submitted"
+    )

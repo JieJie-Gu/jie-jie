@@ -18,9 +18,13 @@ from smart_cs.application.memory import (
 class DummyRepository:
     def __init__(self) -> None:
         self.summaries = []
+        self.tool_calls = []
 
     def upsert_conversation_summary(self, *args, **kwargs) -> None:
         self.summaries.append((args, kwargs))
+
+    def record_tool_call(self, **kwargs) -> None:
+        self.tool_calls.append(kwargs)
 
 
 class RecordingStore:
@@ -37,6 +41,14 @@ class RecordingStore:
 
     def search(self, namespace, query: str, limit: int):
         return []
+
+
+class SequenceExtractor:
+    def __init__(self, candidates):
+        self.candidates = list(candidates)
+
+    def extract(self, _state):
+        return [self.candidates.pop(0)]
 
 
 def test_memory_extractor_creates_preference_candidate_from_user_message() -> None:
@@ -78,7 +90,7 @@ def test_memory_writeback_writes_high_confidence_preference_to_active_memories()
     assert value["memory_decision"]["action"] == "write"
 
 
-def test_service_event_writes_conversation_events_namespace() -> None:
+def test_service_event_writes_customer_memories_namespace_for_recall() -> None:
     store = RecordingStore()
 
     MemoryWriteback(repository=DummyRepository()).update(
@@ -100,9 +112,10 @@ def test_service_event_writes_conversation_events_namespace() -> None:
     )
 
     namespace, key, value = store.writes[0]
-    assert namespace == ("conversation", "conv-1", "events")
+    assert namespace == ("customer", "C001", "memories")
     assert key == "episode:after_sales_event:A1:submitted"
     assert value["memory_kind"] == "episodic"
+    assert value["value"]["conversation_id"] == "conv-1"
     assert value["memory_decision"]["action"] == "write"
 
 
@@ -145,7 +158,7 @@ def test_memory_writer_semantic_same_key_merges_evidence_and_sets_ttl() -> None:
     assert len(value["evidence"]) == 2
 
 
-def test_memory_writer_semantic_conflict_marks_pending() -> None:
+def test_memory_writer_semantic_conflict_preserves_active_and_writes_candidate() -> None:
     store = RecordingStore()
     writer = MemoryWriter()
     decision = MemoryDecision(action="write", reason="approved_semantic_memory")
@@ -169,12 +182,17 @@ def test_memory_writer_semantic_conflict_marks_pending() -> None:
     writer.write(first, decision, store)
     writer.write(second, decision, store)
 
-    _namespace, _key, value = store.writes[-1]
+    active = store.records[(("customer", "C001", "memories"), "preference:shoe_size")]
+    namespace, _key, value = store.writes[-1]
+    assert namespace == ("customer", "C001", "memory_candidates")
+    assert active["value"] == {"shoe_size": "42"}
+    assert active["review_status"] == "approved"
     assert value["conflict"] is True
     assert value["review_status"] == "pending"
     assert value["confidence"] == "medium"
-    assert value["value"]["previous"] == {"shoe_size": "42"}
-    assert value["value"]["current"] == {"shoe_size": "43"}
+    assert value["value"]["previous_value"] == {"shoe_size": "42"}
+    assert value["value"]["proposed_value"] == {"shoe_size": "43"}
+    assert value["value"]["conflict_with"] == "preference:shoe_size"
 
 
 def test_memory_writer_episodic_same_key_is_idempotent_append() -> None:
@@ -182,8 +200,8 @@ def test_memory_writer_episodic_same_key_is_idempotent_append() -> None:
     writer = MemoryWriter()
     decision = MemoryDecision(action="write", reason="approved_episodic_memory")
     event = MemoryCandidate(
-        scope="conversation",
-        owner_id="conv-1",
+        scope="customer",
+        owner_id="C001",
         memory_kind="episodic",
         memory_type="after_sales_event",
         key="episode:after_sales_event:A1:submitted",
@@ -201,11 +219,63 @@ def test_memory_writer_episodic_same_key_is_idempotent_append() -> None:
     writer.write(event, decision, store)
 
     namespace, key, value = store.writes[-1]
-    assert namespace == ("conversation", "conv-1", "events")
+    assert namespace == ("customer", "C001", "memories")
     assert key == "episode:after_sales_event:A1:submitted"
     assert value["memory_kind"] == "episodic"
     assert value["expires_at"] is not None
     assert len(value["evidence"]) == 1
+
+
+def test_memory_writeback_audits_before_after_for_upsert_and_conflict() -> None:
+    repository = DummyRepository()
+    store = RecordingStore()
+    first = MemoryCandidate(
+        scope="customer",
+        owner_id="C001",
+        memory_kind="semantic",
+        memory_type="preference",
+        key="preference:shoe_size",
+        title="Shoe size",
+        description="User wears size 42.",
+        value={"shoe_size": "42"},
+        evidence=[{"text": "first"}],
+        source="llm_extraction",
+        confidence="high",
+        risk_level="low",
+        review_status="approved",
+    ).model_dump()
+    second = {**first, "value": {"shoe_size": "43"}, "evidence": [{"text": "second"}]}
+    extractor = SequenceExtractor([first, second])
+    writeback = MemoryWriteback(repository=repository, extractor=extractor)
+    writeback.update(
+        {
+            "conversation_id": "conv-1",
+            "customer_id": "C001",
+            "message": "first",
+            "messages": [],
+            "business_result": {},
+        },
+        store=store,
+    )
+    writeback.update(
+        {
+            "conversation_id": "conv-1",
+            "customer_id": "C001",
+            "message": "second",
+            "messages": [],
+            "business_result": {},
+        },
+        store=store,
+    )
+
+    write_calls = [call for call in repository.tool_calls if call["tool_name"] == "memory_write"]
+    conflict_calls = [call for call in repository.tool_calls if call["tool_name"] == "memory_conflict"]
+    assert write_calls[0]["result"]["operation"] == "semantic_upsert"
+    assert write_calls[0]["result"]["before_json"] is None
+    assert write_calls[0]["result"]["after_json"]["value"] == {"shoe_size": "42"}
+    assert conflict_calls[0]["result"]["operation"] == "semantic_conflict"
+    assert conflict_calls[0]["result"]["before_json"]["value"] == {"shoe_size": "42"}
+    assert conflict_calls[0]["result"]["after_json"]["value"]["proposed_value"] == {"shoe_size": "43"}
 
 
 def test_summarizer_removes_only_human_and_ai_messages() -> None:

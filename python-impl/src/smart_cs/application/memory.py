@@ -57,7 +57,12 @@ class MemoryCandidate(BaseModel):
     updated_at: str | None = None
 
 
-def normalize_memory_candidate(raw: dict[str, Any]) -> dict[str, Any]:
+def normalize_memory_candidate(
+    raw: dict[str, Any],
+    *,
+    customer_id: str | None = None,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
     candidate = dict(raw)
     memory_type = str(candidate.get("memory_type") or "preference")
     if not candidate.get("memory_kind"):
@@ -76,6 +81,12 @@ def normalize_memory_candidate(raw: dict[str, Any]) -> dict[str, Any]:
     source = str(candidate.get("source") or "system")
     if source in {"pending_action", "confirmed_action"}:
         candidate["source"] = "tool_result"
+    if candidate.get("memory_kind") == "episodic" and customer_id:
+        candidate["scope"] = "customer"
+        candidate["owner_id"] = customer_id
+        candidate.setdefault("value", {})
+        if isinstance(candidate["value"], dict):
+            candidate["value"].setdefault("conversation_id", conversation_id)
     candidate.setdefault("review_status", "pending")
     candidate.setdefault("evidence", [])
     candidate.setdefault("value", {})
@@ -149,17 +160,20 @@ class MemoryExtractor:
         }.get(str(action_type), "service_event")
         return [
             MemoryCandidate(
-                scope="conversation",
-                owner_id=state["conversation_id"],
+                scope="customer",
+                owner_id=state["customer_id"],
                 memory_kind="episodic",
                 memory_type=memory_type,
                 key=f"episode:{memory_type}:{action_id}:{status}",
                 title=f"{action_type} {status}",
                 description=f"Conversation action {action_id} reached {status}.",
                 value={
-                    key: value
-                    for key, value in result.items()
-                    if key in {"action_id", "action_type", "status", "ticket_id", "order_id"}
+                    **{
+                        key: value
+                        for key, value in result.items()
+                        if key in {"action_id", "action_type", "status", "ticket_id", "order_id"}
+                    },
+                    "conversation_id": state["conversation_id"],
                 },
                 evidence=[
                     {
@@ -261,26 +275,30 @@ class MemoryWriter:
         candidate: MemoryCandidate,
         decision: MemoryDecision,
         store: MemoryStoreProtocol,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         if decision.action == "discard":
-            return
+            return [
+                {
+                    "operation": "discard",
+                    "key": candidate.key,
+                    "reason": decision.reason,
+                    "before_json": None,
+                    "after_json": None,
+                }
+            ]
         namespace = self._namespace_for(candidate, decision)
         if decision.action == "write":
             if candidate.memory_kind == "semantic":
-                self._upsert_semantic(candidate, decision, namespace, store)
-                return
+                return self._upsert_semantic(candidate, decision, namespace, store)
             if candidate.memory_kind == "episodic":
-                self._append_episodic(candidate, decision, namespace, store)
-                return
-        self._write_candidate(candidate, decision, namespace, store)
+                return self._append_episodic(candidate, decision, namespace, store)
+        return self._write_candidate(candidate, decision, namespace, store)
 
     @staticmethod
     def _namespace_for(
         candidate: MemoryCandidate,
         decision: MemoryDecision,
     ) -> tuple[str, str, str]:
-        if candidate.scope == "conversation" and decision.action == "write":
-            return ("conversation", candidate.owner_id, "events")
         if candidate.memory_type == "badcase_candidate":
             return ("tenant", candidate.owner_id or "default", "badcase_candidates")
         if decision.action == "write":
@@ -293,7 +311,7 @@ class MemoryWriter:
         decision: MemoryDecision,
         namespace: tuple[str, str, str],
         store: MemoryStoreProtocol,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         value = self._payload(candidate, decision)
         existing = self._stored_value(store.get(namespace, candidate.key))
         if existing:
@@ -305,12 +323,43 @@ class MemoryWriter:
                     value["confidence"],
                 )
             else:
-                value["value"] = {"current": candidate.value, "previous": old_value}
-                value["confidence"] = "medium"
-                value["review_status"] = "pending"
-                value["conflict"] = True
-                value["evidence"] = self._merge_evidence(existing.get("evidence", []), value["evidence"])
+                candidate_namespace = (candidate.scope, candidate.owner_id, "memory_candidates")
+                candidate_value = self._payload(candidate, decision)
+                candidate_value["value"] = {
+                    "proposed_value": candidate.value,
+                    "previous_value": old_value,
+                    "conflict": True,
+                    "conflict_with": candidate.key,
+                }
+                candidate_value["confidence"] = "medium"
+                candidate_value["review_status"] = "pending"
+                candidate_value["conflict"] = True
+                candidate_value["evidence"] = self._merge_evidence(
+                    existing.get("evidence", []),
+                    candidate_value["evidence"],
+                )
+                store.put(candidate_namespace, candidate.key, candidate_value)
+                return [
+                    {
+                        "operation": "semantic_conflict",
+                        "key": candidate.key,
+                        "namespace": candidate_namespace,
+                        "reason": decision.reason,
+                        "before_json": existing,
+                        "after_json": candidate_value,
+                    }
+                ]
         store.put(namespace, candidate.key, value)
+        return [
+            {
+                "operation": "semantic_upsert",
+                "key": candidate.key,
+                "namespace": namespace,
+                "reason": decision.reason,
+                "before_json": existing or None,
+                "after_json": value,
+            }
+        ]
 
     def _append_episodic(
         self,
@@ -318,12 +367,22 @@ class MemoryWriter:
         decision: MemoryDecision,
         namespace: tuple[str, str, str],
         store: MemoryStoreProtocol,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         value = self._payload(candidate, decision)
         existing = self._stored_value(store.get(namespace, candidate.key))
         if existing:
             value["evidence"] = self._merge_evidence(existing.get("evidence", []), value["evidence"])
         store.put(namespace, candidate.key, value)
+        return [
+            {
+                "operation": "episodic_append",
+                "key": candidate.key,
+                "namespace": namespace,
+                "reason": decision.reason,
+                "before_json": existing or None,
+                "after_json": value,
+            }
+        ]
 
     def _write_candidate(
         self,
@@ -331,8 +390,20 @@ class MemoryWriter:
         decision: MemoryDecision,
         namespace: tuple[str, str, str],
         store: MemoryStoreProtocol,
-    ) -> None:
-        store.put(namespace, candidate.key, self._payload(candidate, decision))
+    ) -> list[dict[str, Any]]:
+        value = self._payload(candidate, decision)
+        existing = self._stored_value(store.get(namespace, candidate.key))
+        store.put(namespace, candidate.key, value)
+        return [
+            {
+                "operation": "candidate_write",
+                "key": candidate.key,
+                "namespace": namespace,
+                "reason": decision.reason,
+                "before_json": existing or None,
+                "after_json": value,
+            }
+        ]
 
     def _payload(self, candidate: MemoryCandidate, decision: MemoryDecision) -> dict[str, Any]:
         value = candidate.model_dump()
@@ -493,7 +564,13 @@ class MemoryWriteback:
         )
 
         for raw_candidate in raw_candidates:
-            candidate = MemoryCandidate.model_validate(normalize_memory_candidate(raw_candidate))
+            candidate = MemoryCandidate.model_validate(
+                normalize_memory_candidate(
+                    raw_candidate,
+                    customer_id=customer_id,
+                    conversation_id=conversation_id,
+                )
+            )
             decision = self.policy.decide(candidate.model_dump())
             self._record_tool_audit(
                 "memory_policy_decide",
@@ -505,17 +582,24 @@ class MemoryWriteback:
                     "decision": decision.model_dump(),
                 },
             )
-            self.writer.write(candidate, decision, store)
-            self._record_tool_audit(
-                "memory_write",
-                state,
-                result={
-                    "key": candidate.key,
-                    "memory_kind": candidate.memory_kind,
-                    "memory_type": candidate.memory_type,
-                    "decision": decision.model_dump(),
-                },
-            )
+            write_results = self.writer.write(candidate, decision, store)
+            for write_result in write_results:
+                self._record_tool_audit(
+                    "memory_conflict"
+                    if write_result.get("operation") == "semantic_conflict"
+                    else "memory_write",
+                    state,
+                    result={
+                        "key": candidate.key,
+                        "memory_kind": candidate.memory_kind,
+                        "memory_type": candidate.memory_type,
+                        "decision": decision.model_dump(),
+                        "operation": write_result.get("operation"),
+                        "reason": write_result.get("reason"),
+                        "before_json": write_result.get("before_json"),
+                        "after_json": write_result.get("after_json"),
+                    },
+                )
 
         return {"conversation_summary": summary, "messages": remove_messages}
 

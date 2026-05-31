@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -121,14 +123,54 @@ class MemoryContextSelector:
 
     @staticmethod
     def _relevance(memory: dict[str, Any], query: str) -> float:
-        haystack = " ".join(
-            str(memory.get(key) or "") for key in ("title", "description", "memory_type")
-        ).lower()
-        terms = [term for term in str(query or "").lower().split() if term]
-        if not terms:
+        haystack = MemoryContextSelector._searchable_text(memory)
+        query_text = str(query or "").lower()
+        if not query_text:
             return 0.5
-        hits = sum(1 for term in terms if term in haystack)
-        return min(1.0, hits / max(1, len(terms)))
+        token_score = MemoryContextSelector._token_overlap(query_text, haystack)
+        ngram_score = max(
+            MemoryContextSelector._ngram_overlap(query_text, haystack, 2),
+            MemoryContextSelector._ngram_overlap(query_text, haystack, 3),
+        )
+        return max(token_score, ngram_score)
+
+    @staticmethod
+    def _searchable_text(memory: dict[str, Any]) -> str:
+        value_text = json.dumps(memory.get("value") or {}, ensure_ascii=False, default=str)
+        return " ".join(
+            [
+                str(memory.get("title") or ""),
+                str(memory.get("description") or ""),
+                str(memory.get("memory_type") or ""),
+                value_text,
+            ]
+        ).lower()
+
+    @staticmethod
+    def _token_overlap(query: str, haystack: str) -> float:
+        tokens = re.findall(r"[a-z0-9]+", query.lower())
+        if not tokens:
+            return 0.0
+        hits = sum(1 for token in tokens if token in haystack)
+        return min(1.0, hits / len(tokens))
+
+    @staticmethod
+    def _ngram_overlap(query: str, haystack: str, n: int) -> float:
+        query_compact = re.sub(r"\s+", "", query.lower())
+        haystack_compact = re.sub(r"\s+", "", haystack.lower())
+        grams = MemoryContextSelector._ngrams(query_compact, n)
+        if not grams:
+            return 0.0
+        hits = sum(1 for gram in grams if gram in haystack_compact)
+        return min(1.0, hits / len(grams))
+
+    @staticmethod
+    def _ngrams(text: str, n: int) -> set[str]:
+        if not text:
+            return set()
+        if len(text) <= n:
+            return {text}
+        return {text[index : index + n] for index in range(0, len(text) - n + 1)}
 
     @staticmethod
     def _recency_score(memory: dict[str, Any]) -> float:

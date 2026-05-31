@@ -96,3 +96,41 @@ def test_memory_selector_boosts_episodic_memory_for_after_sales_intent() -> None
     )
 
     assert result.memories[0].memory_kind == "episodic"
+
+
+def test_memory_selector_ranks_chinese_no_space_query_and_uses_value_text() -> None:
+    result = MemoryContextSelector().select(
+        MemorySelectionInput(
+            query="\u7528\u6237\u559c\u6b22\u9ed1\u8272\u978b",
+            memories=[
+                {
+                    "key": "preference:irrelevant",
+                    "memory_kind": "semantic",
+                    "memory_type": "preference",
+                    "title": "\u5c3a\u7801\u504f\u597d",
+                    "description": "\u7528\u6237\u901a\u5e38\u7a7f42\u7801",
+                    "value": {"shoe_size": "42"},
+                    "confidence": "high",
+                    "risk_level": "low",
+                    "review_status": "approved",
+                },
+                {
+                    "key": "preference:black_shoes",
+                    "memory_kind": "semantic",
+                    "memory_type": "preference",
+                    "title": "\u989c\u8272\u504f\u597d",
+                    "description": "\u7528\u6237\u559c\u6b22\u9ed1\u8272\u8fd0\u52a8\u978b",
+                    "value": {"color": "\u9ed1\u8272", "category": "\u978b"},
+                    "confidence": "high",
+                    "risk_level": "low",
+                    "review_status": "approved",
+                },
+            ],
+            limit=2,
+        )
+    )
+
+    assert result.memories[0].memory_id == "preference:black_shoes"
+    projected = result.memories[0].model_dump()
+    assert "value" not in projected
+    assert "evidence" not in projected
