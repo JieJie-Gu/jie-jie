@@ -79,6 +79,25 @@ class WritableMemoryStore:
         ][:limit]
 
 
+class RecordingMemoryRetrieval:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def search_active_memories(self, **kwargs):
+        self.calls.append(kwargs)
+        return [
+            {
+                "memory_id": "preference:shoe_size",
+                "memory_kind": "semantic",
+                "memory_type": "preference",
+                "title": "Shoe size preference",
+                "description": "Usually wears size 42.",
+                "confidence": "high",
+                "score": 1.0,
+            }
+        ]
+
+
 def test_recall_memory_returns_short_and_long_term_memory_and_audits() -> None:
     executor = FakeExecutor()
     ctx = RuntimeToolContext(
@@ -134,6 +153,38 @@ def test_recall_memory_short_term_scope_does_not_search_long_term() -> None:
 
     assert "short_term" in result
     assert "long_term" not in result
+
+
+def test_recall_memory_long_term_uses_shared_retrieval_service() -> None:
+    executor = FakeExecutor()
+    retrieval = RecordingMemoryRetrieval()
+    ctx = RuntimeToolContext(
+        conversation_id="conv-1",
+        customer_id="C001",
+        request_id="req-1",
+        turn_fence=None,
+        runtime_context={"session_facts": {"current_intent": "pre_sales"}},
+        memory_retrieval=retrieval,
+    )
+
+    result = run_recall_memory(
+        executor,
+        ctx,
+        query="shoe size",
+        scope="long_term",
+        caller_agent="PreSalesAgent",
+    )
+
+    assert result["long_term"]["semantic_memories"][0]["memory_id"] == "preference:shoe_size"
+    assert retrieval.calls == [
+        {
+            "customer_id": "C001",
+            "query": "shoe size",
+            "intent": "pre_sales",
+            "limit": 5,
+            "max_chars": 1200,
+        }
+    ]
 
 
 def test_after_sales_event_written_to_customer_memories_is_recalled_as_episodic() -> None:

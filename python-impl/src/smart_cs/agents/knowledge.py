@@ -89,10 +89,7 @@ class KnowledgeService:
             if self._has_relevant_evidence(document, rewritten_query, category_expression)
         ]
         # 优先使用窗口文本作为上下文，缺失时回退到文档正文。
-        contexts = [
-            str(document.metadata.get("window_text", document.page_content))
-            for document in documents
-        ]
+        contexts = [document.page_content for document in documents]
         # 从 metadata 中提取引用信息，保证答案可以追溯到原始知识片段。
         citations = [
             Citation(
@@ -129,7 +126,7 @@ class KnowledgeService:
         if self._is_realtime_order_query(rewritten_query):
             return False
 
-        evidence_text = str(document.metadata.get("window_text", document.page_content))
+        evidence_text = document.page_content
         required_terms = self._required_evidence_terms(rewritten_query)
         if required_terms:
             # 对运费、时限、凭证等事实型问题，必须命中专门证据词。

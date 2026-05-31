@@ -10,7 +10,7 @@ import pytest
 from langchain_core.embeddings import Embeddings
 
 from smart_cs.config import Settings
-from smart_cs.rag.indexing import markdown_sentence_documents
+from smart_cs.rag.indexing import markdown_section_documents
 from smart_cs.rag.vector_store import build_hybrid_store
 
 
@@ -33,15 +33,15 @@ def require_milvus(uri: str) -> None:
 
 
 @pytest.mark.integration
-def test_hybrid_search_returns_filtered_after_sales_sentence() -> None:
+def test_hybrid_search_returns_filtered_after_sales_section() -> None:
     settings = Settings(milvus_collection="smart_cs_knowledge_test")
     require_milvus(settings.milvus_uri)
-    documents = markdown_sentence_documents(
+    documents = markdown_section_documents(
         "after_sales_policy",
         "after_sales",
         "# 售后政策\n## 七天无理由\n签收后七天内可以申请退货。商品应保持完好。",
     )
-    documents += markdown_sentence_documents(
+    documents += markdown_section_documents(
         "shipping_policy",
         "shipping",
         "# 配送说明\n## 发货状态\n已发货表示包裹已经交给承运方处理。",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from threading import Lock
 
@@ -20,6 +21,7 @@ from smart_cs.application.context_builder import RuntimeContextBuilder
 from smart_cs.application.conversation_service import ConversationService
 from smart_cs.application.long_term_memory import LongTermMemoryExtractor
 from smart_cs.application.memory import ConversationSummarizer, MemoryWriteback, SqlMemoryStoreAdapter
+from smart_cs.application.memory_retrieval import MemoryRetrievalService, MemoryVectorIndex
 from smart_cs.application.session_facts import SessionFactsExtractor
 from smart_cs.config import Settings
 from smart_cs.domain.errors import (
@@ -33,6 +35,9 @@ from smart_cs.infrastructure.model_factory import configured_model_profiles
 from smart_cs.infrastructure.repositories import SqlRepository
 from smart_cs.infrastructure.assets import LocalAssetStorage
 from smart_cs.tools.executor import AuthorizedToolExecutor
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -93,7 +98,13 @@ def build_runtime(
         knowledge_service = LazyKnowledgeService(settings)
 
     # 组装多 Agent 运行时：Supervisor 只调用 sub-agent tools；底层工具仍由 executor 强制鉴权。
-    memory_store = SqlMemoryStoreAdapter(repository)
+    memory_vector_index = _build_memory_vector_index(settings)
+    repository.memory_index = memory_vector_index
+    memory_store = SqlMemoryStoreAdapter(repository, memory_index=memory_vector_index)
+    memory_retrieval = MemoryRetrievalService(
+        memory_store,
+        vector_index=memory_vector_index,
+    )
     runtime = AgentRuntime(
         executor=AuthorizedToolExecutor(repository),
         checkpoint_path=settings.checkpoint_path,
@@ -108,12 +119,33 @@ def build_runtime(
             repository,
             memory_store,
             session_facts_extractor=SessionFactsExtractor(profiles.extraction),
+            memory_retrieval=memory_retrieval,
         ),
         memory_store=memory_store,
     )
 
     # 返回统一资源包，供 FastAPI app 生命周期持有并在关闭时清理。
     return RuntimeBundle(database=database, repository=repository, runtime=runtime)
+
+
+def _build_memory_vector_index(settings: Settings) -> MemoryVectorIndex | None:
+    if not settings.memory_vector_enabled:
+        return None
+    try:
+        from smart_cs.rag.embeddings import LocalSentenceEmbeddings
+        from smart_cs.rag.vector_store import connect_hybrid_store
+
+        embeddings = LocalSentenceEmbeddings(settings.embedding_model)
+        return MemoryVectorIndex(
+            connect_hybrid_store(
+                settings,
+                embeddings,
+                collection_name=settings.memory_milvus_collection,
+            )
+        )
+    except Exception:
+        LOGGER.warning("Memory vector index is unavailable; falling back to SQL memory search", exc_info=True)
+        return None
 
 
 def create_app(

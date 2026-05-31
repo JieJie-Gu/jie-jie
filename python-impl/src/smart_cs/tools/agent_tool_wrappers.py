@@ -11,7 +11,8 @@ from typing import Any
 from langchain.tools import tool
 
 from smart_cs.agents.knowledge import KnowledgeService
-from smart_cs.application.memory_selector import MemoryContextSelector, MemorySelectionInput
+from smart_cs.application.memory_retrieval import MemoryRetrievalService
+from smart_cs.application.memory_selector import MemoryContextSelector
 from smart_cs.application.policy import PolicyEngine
 from smart_cs.domain.enums import ToolCallStatus
 from smart_cs.domain.errors import ToolPermissionError
@@ -29,6 +30,7 @@ class RuntimeToolContext:
     runtime_context: dict[str, Any] | None = None
     memory_store: Any | None = None
     memory_selector: MemoryContextSelector | None = None
+    memory_retrieval: MemoryRetrievalService | None = None
 
     def idempotency_key(self, action_type: str, *parts: object) -> str:
         payload = "|".join([self.conversation_id, self.customer_id, action_type, *map(str, parts)])
@@ -401,47 +403,25 @@ def _short_term_memory(ctx: RuntimeToolContext) -> dict[str, Any]:
 
 
 def _long_term_memory(ctx: RuntimeToolContext, query: str) -> dict[str, Any]:
-    if ctx.memory_store is None:
-        selected = []
+    service = ctx.memory_retrieval
+    if service is None and ctx.memory_store is not None:
+        service = MemoryRetrievalService(
+            ctx.memory_store,
+            selector=ctx.memory_selector or MemoryContextSelector(),
+        )
+    if service is None:
+        selected: list[dict[str, Any]] = []
     else:
-        namespace = ("customer", ctx.customer_id, "memories")
-        records = ctx.memory_store.search(namespace, query=query, limit=20)
-        memories = [_memory_record_to_dict(record) for record in records]
-        selector = ctx.memory_selector or MemoryContextSelector()
-        selected = selector.select(
-            MemorySelectionInput(
-                query=query,
-                intent=(ctx.runtime_context or {}).get("session_facts", {}).get("current_intent"),
-                memories=memories,
-                limit=5,
-                max_chars=1200,
-            )
-        ).memories
-    semantic = [memory.model_dump() for memory in selected if memory.memory_kind == "semantic"]
-    episodic = [memory.model_dump() for memory in selected if memory.memory_kind == "episodic"]
+        selected = service.search_active_memories(
+            customer_id=ctx.customer_id,
+            query=query,
+            intent=(ctx.runtime_context or {}).get("session_facts", {}).get("current_intent"),
+            limit=5,
+            max_chars=1200,
+        )
+    semantic = [memory for memory in selected if memory.get("memory_kind") == "semantic"]
+    episodic = [memory for memory in selected if memory.get("memory_kind") == "episodic"]
     return {"semantic_memories": semantic, "episodic_memories": episodic}
-
-
-def _memory_record_to_dict(record: Any) -> dict[str, Any]:
-    if isinstance(record, dict):
-        return dict(record)
-    value = getattr(record, "value", None)
-    if isinstance(value, dict):
-        memory = dict(value)
-    else:
-        value_json = getattr(record, "value_json", None)
-        memory = dict(value_json) if isinstance(value_json, dict) else {}
-    memory.setdefault("memory_id", getattr(record, "key", None) or getattr(record, "id", None))
-    memory.setdefault("key", getattr(record, "key", None))
-    memory.setdefault("title", getattr(record, "title", None))
-    memory.setdefault("description", getattr(record, "description", None))
-    memory.setdefault("confidence", getattr(record, "confidence", None))
-    memory.setdefault("risk_level", getattr(record, "risk_level", None))
-    memory.setdefault("review_status", getattr(record, "review_status", None))
-    expires_at = getattr(record, "expires_at", None)
-    if expires_at is not None:
-        memory.setdefault("expires_at", expires_at.isoformat())
-    return {key: value for key, value in memory.items() if value is not None}
 
 
 def _authorize_wrapper_tool(

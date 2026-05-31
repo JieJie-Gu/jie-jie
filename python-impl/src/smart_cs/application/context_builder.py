@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from smart_cs.application.memory_selector import (
-    MemoryContextSelector,
-    MemorySelectionInput,
-)
+from smart_cs.application.memory_retrieval import MemoryRetrievalService
+from smart_cs.application.memory_selector import MemoryContextSelector
 from smart_cs.application.session_facts import SessionFactsExtractor
 from smart_cs.domain.enums import ToolCallStatus
 
@@ -66,6 +64,7 @@ class RuntimeContextBuilder:
         recent_message_limit: int = 10,
         session_facts_extractor: SessionFactsExtractor | None = None,
         memory_selector: MemoryContextSelector | None = None,
+        memory_retrieval: MemoryRetrievalService | None = None,
     ) -> None:
         self.repository = repository
         self.memory_store = memory_store
@@ -73,6 +72,10 @@ class RuntimeContextBuilder:
         self.recent_message_limit = recent_message_limit
         self.session_facts_extractor = session_facts_extractor or SessionFactsExtractor()
         self.memory_selector = memory_selector or MemoryContextSelector()
+        self.memory_retrieval = memory_retrieval or MemoryRetrievalService(
+            memory_store,
+            selector=self.memory_selector,
+        )
 
     def build(
         self,
@@ -191,26 +194,13 @@ class RuntimeContextBuilder:
         *,
         intent: str | None = None,
     ) -> list[dict[str, Any]]:
-        namespace = ("customer", customer_id, "memories")
-        search = getattr(self.memory_store, "search", None)
-        if search is None:
-            return []
-        records = search(
-            namespace,
+        projected = self.memory_retrieval.search_active_memories(
+            customer_id=customer_id,
             query=message,
-            limit=max(self.memory_limit * 4, 20),
+            intent=intent,
+            limit=self.memory_limit,
+            max_chars=1200,
         )
-        raw_memories = [self._memory_record_to_dict(record) for record in records]
-        selected = self.memory_selector.select(
-            MemorySelectionInput(
-                query=message,
-                intent=intent,
-                memories=raw_memories,
-                limit=self.memory_limit,
-                max_chars=1200,
-            )
-        )
-        projected = [memory.model_dump() for memory in selected.memories]
         self._record_memory_select(customer_id, message, intent, projected)
         return projected
 
@@ -262,24 +252,3 @@ class RuntimeContextBuilder:
             "order_id": action.order_id,
             "reason": action.reason,
         }
-
-    @staticmethod
-    def _memory_record_to_dict(record: Any) -> dict[str, Any]:
-        value = getattr(record, "value", None)
-        if isinstance(value, dict):
-            memory = dict(value)
-            memory.setdefault("memory_id", getattr(record, "key", None))
-            return memory
-
-        value_json = getattr(record, "value_json", None)
-        if isinstance(value_json, dict):
-            memory = dict(value_json)
-        else:
-            memory = {}
-
-        memory.setdefault("memory_id", getattr(record, "id", None))
-        memory.setdefault("key", getattr(record, "key", None))
-        memory.setdefault("title", getattr(record, "title", None))
-        memory.setdefault("description", getattr(record, "description", None))
-        memory.setdefault("confidence", getattr(record, "confidence", None))
-        return {key: value for key, value in memory.items() if value is not None}

@@ -42,6 +42,7 @@ class SqlRepository:
 
     def __init__(self, database: Database) -> None:
         self.database = database
+        self.memory_index = None
 
     def create_schema(self) -> None:
         Base.metadata.create_all(self.database.engine)
@@ -697,6 +698,7 @@ class SqlRepository:
             candidate.approved_by = reviewer_id
             session.flush()
             after = self._memory_record_result(active)
+            self._sync_memory_index_record(active)
             self.record_tool_call(
                 tool_name="memory_review",
                 arguments={
@@ -733,6 +735,7 @@ class SqlRepository:
             candidate.value_json = value
             candidate.approved_by = reviewer_id
             session.flush()
+            self._sync_memory_index_record(candidate)
             after = self._memory_record_result(candidate)
             self.record_tool_call(
                 tool_name="memory_review",
@@ -749,6 +752,15 @@ class SqlRepository:
                 session=session,
             )
             return after
+
+    def _sync_memory_index_record(self, record: MemoryRecord) -> None:
+        index = getattr(self, "memory_index", None)
+        if index is None:
+            return
+        try:
+            index.sync_record(record)
+        except Exception:
+            return
 
     @staticmethod
     def _memory_record_result(record: MemoryRecord) -> dict[str, Any]:

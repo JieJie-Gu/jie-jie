@@ -243,6 +243,7 @@ class AgentRuntime:
                 runtime_context=runtime_context,
                 memory_store=self.store,
                 memory_selector=self.context_builder.memory_selector,
+                memory_retrieval=self.context_builder.memory_retrieval,
             )
             with self._tool_context(ctx):
                 graph_result = self.graph.invoke(

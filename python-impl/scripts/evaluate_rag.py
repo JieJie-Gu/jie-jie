@@ -41,7 +41,7 @@ class OfflineMarkdownStore:
         return sorted(
             candidates,
             key=lambda document: sum(
-                term in str(document.metadata.get("window_text", document.page_content))
+                term in document.page_content
                 for term in terms
             ),
             reverse=True,

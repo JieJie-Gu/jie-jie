@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import json
+import logging
 import re
 from typing import Any, Literal, Protocol
 
@@ -11,6 +12,10 @@ from pydantic import BaseModel
 
 from smart_cs.domain.enums import ActionStatus, ToolCallStatus
 from smart_cs.infrastructure.prompts import CONVERSATION_ROLLING_SUMMARY_PROMPT
+from smart_cs.application.memory_retrieval import MemoryVectorIndex, is_indexable_memory
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class MemoryStoreProtocol(Protocol):
@@ -230,12 +235,13 @@ class MemoryExtractor:
 
 
 class SqlMemoryStoreAdapter:
-    def __init__(self, repository: Any) -> None:
+    def __init__(self, repository: Any, memory_index: MemoryVectorIndex | None = None) -> None:
         self.repository = repository
+        self.memory_index = memory_index
 
-    def put(self, namespace: tuple[str, str, str], key: str, value: dict[str, Any]) -> None:
+    def put(self, namespace: tuple[str, str, str], key: str, value: dict[str, Any]) -> Any:
         scope, owner_id, _bucket = namespace
-        self.repository.put_memory(
+        record = self.repository.put_memory(
             namespace,
             key,
             value,
@@ -247,6 +253,8 @@ class SqlMemoryStoreAdapter:
             risk_level=str(value.get("risk_level", "low")),
             created_by="system",
         )
+        self._sync_index(record, namespace, value)
+        return record
 
     def get(self, namespace: tuple[str, str, str], key: str) -> Any | None:
         getter = getattr(self.repository, "get_memory", None)
@@ -256,6 +264,35 @@ class SqlMemoryStoreAdapter:
 
     def search(self, namespace: tuple[str, str, str], query: str, limit: int) -> list[Any]:
         return self.repository.search_memories(namespace, query=query, limit=limit)
+
+    def _sync_index(
+        self,
+        record: Any,
+        namespace: tuple[str, str, str],
+        value: dict[str, Any],
+    ) -> None:
+        if self.memory_index is None:
+            return
+        try:
+            payload = {
+                **value,
+                "memory_id": getattr(record, "id", None),
+                "id": getattr(record, "id", None),
+                "namespace": "/".join(namespace),
+                "key": key_from_record(record, value),
+                "scope": namespace[0],
+                "owner_id": namespace[1],
+            }
+            if is_indexable_memory(payload):
+                self.memory_index.upsert(payload)
+            else:
+                self.memory_index.delete(payload)
+        except Exception:
+            LOGGER.debug("Unable to sync memory vector index", exc_info=True)
+
+
+def key_from_record(record: Any, value: dict[str, Any]) -> str:
+    return str(getattr(record, "key", None) or value.get("key") or "")
 
 
 class MemoryWriter:

@@ -10,6 +10,45 @@ from pymilvus import connections
 from smart_cs.config import Settings
 
 
+DENSE_VECTOR_FIELD = "dense"
+SPARSE_VECTOR_FIELD = "sparse"
+VECTOR_FIELDS = [DENSE_VECTOR_FIELD, SPARSE_VECTOR_FIELD]
+
+
+def hybrid_index_params() -> list[dict]:
+    return [
+        {
+            "metric_type": "COSINE",
+            "index_type": "HNSW",
+            "params": {"M": 16, "efConstruction": 200},
+        },
+        {
+            "metric_type": "BM25",
+            "index_type": "AUTOINDEX",
+            "params": {},
+        },
+    ]
+
+
+def hybrid_search_params() -> list[dict]:
+    return [
+        {"metric_type": "COSINE", "params": {"ef": 64}},
+        {"metric_type": "BM25", "params": {}},
+    ]
+
+
+def hybrid_store_kwargs(settings: Settings, *, collection_name: str) -> dict:
+    return {
+        "builtin_function": BM25BuiltInFunction(analyzer_params={"type": "chinese"}),
+        "vector_field": VECTOR_FIELDS,
+        "connection_args": {"uri": settings.milvus_uri},
+        "collection_name": collection_name,
+        "consistency_level": "Strong",
+        "index_params": hybrid_index_params(),
+        "search_params": hybrid_search_params(),
+    }
+
+
 class _OrmAliasMilvus(Milvus):
     """Bridge MilvusClient aliases to PyMilvus ORM calls used by langchain-milvus."""
 
@@ -36,29 +75,33 @@ def build_hybrid_store(
     documents: list[Document],
     *,
     drop_old: bool,
+    collection_name: str | None = None,
 ) -> Milvus:
     """Build the official Milvus dense plus BM25 hybrid knowledge store."""
 
     return _OrmAliasMilvus.from_documents(
         documents=documents,
         embedding=embeddings,
-        builtin_function=BM25BuiltInFunction(analyzer_params={"type": "chinese"}),
-        vector_field=["dense", "sparse"],
-        connection_args={"uri": settings.milvus_uri},
-        collection_name=settings.milvus_collection,
-        consistency_level="Strong",
+        **hybrid_store_kwargs(
+            settings,
+            collection_name=collection_name or settings.milvus_collection,
+        ),
         drop_old=drop_old,
     )
 
 
-def connect_hybrid_store(settings: Settings, embeddings: Embeddings) -> Milvus:
+def connect_hybrid_store(
+    settings: Settings,
+    embeddings: Embeddings,
+    *,
+    collection_name: str | None = None,
+) -> Milvus:
     """Connect retrieval to an indexed collection without rebuilding it."""
 
     return _OrmAliasMilvus(
         embedding_function=embeddings,
-        builtin_function=BM25BuiltInFunction(analyzer_params={"type": "chinese"}),
-        vector_field=["dense", "sparse"],
-        connection_args={"uri": settings.milvus_uri},
-        collection_name=settings.milvus_collection,
-        consistency_level="Strong",
+        **hybrid_store_kwargs(
+            settings,
+            collection_name=collection_name or settings.milvus_collection,
+        ),
     )
