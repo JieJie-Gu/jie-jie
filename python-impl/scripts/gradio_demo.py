@@ -1,13 +1,16 @@
-# 启动 Gradio 演示界面，并适配客服后端 API 交互。
+# 启动面向演示和调试的 Gradio 前端，通过 FastAPI 后端体验客服 Agent。
 
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any, Callable
 
 import requests
 
 
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BACKEND_URL = "http://localhost:8000"
 DEFAULT_CUSTOMER_ID = "C001"
 
@@ -43,6 +46,7 @@ class SmartCsApiClient:
             "POST",
             f"/api/conversations/{conversation_id}/messages",
             json_payload={"customer_id": customer_id, "content": content},
+            timeout=120,
         )
 
     def send_message_with_image(
@@ -58,6 +62,7 @@ class SmartCsApiClient:
                 f"/api/conversations/{conversation_id}/messages-with-image",
                 data={"customer_id": customer_id, "content": content},
                 files={"image": (Path(image_path).name, image_file, _content_type(image_path))},
+                timeout=180,
             )
 
     def confirm_action(
@@ -76,6 +81,7 @@ class SmartCsApiClient:
                 "action_id": action_id,
                 "approved": approved,
             },
+            timeout=120,
         )
 
     def list_runs(self, conversation_id: str, customer_id: str) -> JsonDict:
@@ -92,6 +98,22 @@ class SmartCsApiClient:
             params={"customer_id": customer_id},
         )
 
+    def current_context(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        *,
+        query: str | None = None,
+    ) -> JsonDict:
+        params: JsonDict = {"customer_id": customer_id}
+        if query:
+            params["query"] = query
+        return self._request(
+            "GET",
+            f"/api/conversations/{conversation_id}/context",
+            params=params,
+        )
+
     def _request(
         self,
         method: str,
@@ -101,6 +123,7 @@ class SmartCsApiClient:
         params: JsonDict | None = None,
         data: JsonDict | None = None,
         files: JsonDict | None = None,
+        timeout: int = 60,
     ) -> JsonDict:
         try:
             response = requests.request(
@@ -110,7 +133,7 @@ class SmartCsApiClient:
                 params=params,
                 data=data,
                 files=files,
-                timeout=30,
+                timeout=timeout,
             )
         except requests.RequestException as error:
             raise DemoApiError(0, {"detail": f"无法连接后端：{error}"}) from error
@@ -151,7 +174,7 @@ def append_chat_entry(
 def format_pending_action(action: JsonDict | None) -> str:
     if not action:
         return "当前没有待确认动作。"
-    fields = ("action_type", "action_id", "order_id", "reason", "status")
+    fields = ("action_type", "action_id", "order_id", "reason", "status", "ticket_id")
     lines = ["### Pending Action"]
     for field in fields:
         if field in action and action[field] is not None:
@@ -190,6 +213,7 @@ class UiUpdate:
     pending_markdown: str
     runs_json: str
     tool_calls_json: str
+    context_json: str
     raw_json: str
 
 
@@ -203,7 +227,7 @@ def create_conversation_callback(
     response = client.create_conversation(customer_id)
     conversation_id = str(response["id"])
     history = [("创建会话", f"已创建会话 {conversation_id}。")]
-    runs, tool_calls = refresh_audit(client, conversation_id, customer_id)
+    runs, tool_calls, context = refresh_observability(client, conversation_id, customer_id)
     return UiUpdate(
         conversation_id=conversation_id,
         chat_history=history,
@@ -211,6 +235,7 @@ def create_conversation_callback(
         pending_markdown=format_pending_action(None),
         runs_json=to_pretty_json(runs),
         tool_calls_json=to_pretty_json(tool_calls),
+        context_json=to_pretty_json(context),
         raw_json=to_pretty_json(response),
     )
 
@@ -244,8 +269,12 @@ def send_message_callback(
         response = client.send_message(active_conversation_id, customer_id, message)
 
     pending_action = extract_pending_action(response)
-    runs, tool_calls, audit_warning = refresh_audit_safely(client, active_conversation_id, customer_id)
-    raw_payload = response if audit_warning is None else {"response": response, "audit_warning": audit_warning}
+    runs, tool_calls, context, warning = refresh_observability_safely(
+        client,
+        active_conversation_id,
+        customer_id,
+    )
+    raw_payload = response if warning is None else {"response": response, "warning": warning}
     return UiUpdate(
         conversation_id=active_conversation_id,
         chat_history=append_chat_entry(
@@ -258,6 +287,7 @@ def send_message_callback(
         pending_markdown=format_pending_action(pending_action),
         runs_json=to_pretty_json(runs),
         tool_calls_json=to_pretty_json(tool_calls),
+        context_json=to_pretty_json(context),
         raw_json=to_pretty_json(raw_payload),
     )
 
@@ -281,6 +311,7 @@ def confirm_action_callback(
             pending_markdown=format_pending_action(None),
             runs_json="{}",
             tool_calls_json="{}",
+            context_json="{}",
             raw_json=message,
         )
 
@@ -292,43 +323,125 @@ def confirm_action_callback(
         approved=approved,
     )
     next_pending = extract_pending_action(response)
-    runs, tool_calls = refresh_audit(client, conversation_id, customer_id)
+    runs, tool_calls, context = refresh_observability(client, conversation_id, customer_id)
     return UiUpdate(
         conversation_id=conversation_id,
-        chat_history=[*chat_history, ("确认动作", str(response.get("reply", "已完成确认。")))],
+        chat_history=[
+            *chat_history,
+            ("确认动作", str(response.get("reply", "已完成确认。"))),
+        ],
         pending_action=next_pending,
         pending_markdown=format_pending_action(next_pending),
         runs_json=to_pretty_json(runs),
         tool_calls_json=to_pretty_json(tool_calls),
+        context_json=to_pretty_json(context),
         raw_json=to_pretty_json(response),
     )
 
 
-def refresh_audit(client: Any, conversation_id: str, customer_id: str) -> tuple[JsonDict, JsonDict]:
+def refresh_observability(
+    client: Any,
+    conversation_id: str,
+    customer_id: str,
+) -> tuple[JsonDict, JsonDict, JsonDict]:
     if not conversation_id:
-        return {}, {}
+        return {}, {}, {}
     runs = client.list_runs(conversation_id, customer_id)
     tool_calls = client.list_tool_calls(conversation_id, customer_id)
-    return runs, tool_calls
+    context = client.current_context(conversation_id, customer_id)
+    return runs, tool_calls, context
 
 
-def refresh_audit_safely(client: Any, conversation_id: str, customer_id: str) -> tuple[JsonDict, JsonDict, str | None]:
+def refresh_observability_safely(
+    client: Any,
+    conversation_id: str,
+    customer_id: str,
+) -> tuple[JsonDict, JsonDict, JsonDict, str | None]:
     try:
-        runs, tool_calls = refresh_audit(client, conversation_id, customer_id)
+        runs, tool_calls, context = refresh_observability(client, conversation_id, customer_id)
     except DemoApiError as error:
-        warning = f"Audit refresh failed: {error}"
+        warning = f"Observability refresh failed: {error}"
         payload = {"error": warning, "detail": error.payload}
-        return payload, payload, warning
-    return runs, tool_calls, None
+        return payload, payload, payload, warning
+    return runs, tool_calls, context, None
+
+
+def refresh_observability_callback(
+    backend_url: str,
+    conversation_id: str,
+    customer_id: str,
+    *,
+    client_factory: ClientFactory = SmartCsApiClient,
+) -> tuple[str, str, str, str]:
+    if not conversation_id:
+        return "{}", "{}", "{}", "请先创建会话。"
+    try:
+        client = client_factory(backend_url)
+        runs, tool_calls, context = refresh_observability(client, conversation_id, customer_id)
+    except DemoApiError as error:
+        error_json = to_pretty_json(error.payload)
+        return error_json, error_json, error_json, str(error)
+    return (
+        to_pretty_json(runs),
+        to_pretty_json(tool_calls),
+        to_pretty_json(context),
+        "已刷新工程观测面板。",
+    )
+
+
+def health_check_callback(
+    backend_url: str,
+    *,
+    client_factory: ClientFactory = SmartCsApiClient,
+) -> str:
+    try:
+        return to_pretty_json(client_factory(backend_url).health())
+    except DemoApiError as error:
+        return to_pretty_json({"error": str(error), "detail": error.payload})
+
+
+def run_rag_index_callback() -> str:
+    return run_project_script("index_knowledge.py")
+
+
+def run_rag_evaluation_callback(offline: bool) -> str:
+    args = ["evaluate_rag.py"]
+    if offline:
+        args.append("--offline")
+    return run_project_script(*args)
+
+
+def run_project_script(*script_args: str, timeout_seconds: int = 900) -> str:
+    command = [sys.executable, str(ROOT / "scripts" / script_args[0]), *script_args[1:]]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except Exception as error:
+        return f"运行失败：{error}"
+
+    output = []
+    output.append("$ " + " ".join(command))
+    if completed.stdout:
+        output.append("\n[stdout]\n" + completed.stdout.strip())
+    if completed.stderr:
+        output.append("\n[stderr]\n" + completed.stderr.strip())
+    output.append(f"\nexit_code={completed.returncode}")
+    return "\n".join(output)
 
 
 def build_app():
     import gradio as gr
 
-    with gr.Blocks(title="Smart CS Multi-Agent Demo") as app:
+    with gr.Blocks(title="Smart CS Agent Demo") as app:
         gr.Markdown(
-            "# Smart CS Multi-Agent Demo\n"
-            "左侧体验客服对话，右侧查看 pending action、AgentRun、ToolCall 和原始 JSON。"
+            "# Smart CS Agent Demo\n"
+            "左侧是客服对话操作区，右侧是工程观测面板。"
         )
         conversation_state = gr.State("")
         pending_action_state = gr.State(None)
@@ -340,36 +453,80 @@ def build_app():
                     value=DEFAULT_BACKEND_URL,
                 )
                 customer_id = gr.Textbox(label="Customer ID", value=DEFAULT_CUSTOMER_ID)
-                create_button = gr.Button("创建会话", variant="primary")
+                with gr.Row():
+                    create_button = gr.Button("创建会话", variant="primary")
+                    health_button = gr.Button("健康检查")
                 conversation_id = gr.Textbox(label="Conversation ID", interactive=False)
-                chatbot = gr.Chatbot(label="客服对话", height=420, type="tuples")
+                chatbot = gr.Chatbot(label="客服对话", height=460, type="tuples")
                 message = gr.Textbox(
                     label="客户消息",
-                    placeholder="例如：推荐一双跑鞋 / 查询订单 O1001 / O1001 鞋底开胶了，申请售后",
+                    placeholder=(
+                        "例如：推荐一双通勤跑鞋 / 查询订单 O1001 / "
+                        "O1001 鞋底开胶了，我想申请售后"
+                    ),
                     lines=3,
                 )
-                image = gr.Image(label="可选图片", type="filepath")
+                image = gr.Image(label="可选图片证据", type="filepath")
                 send_button = gr.Button("发送", variant="primary")
 
-            with gr.Column(scale=4):
-                pending_markdown = gr.Markdown("当前没有待确认动作。")
+            with gr.Column(scale=6):
+                pending_markdown = gr.Markdown(format_pending_action(None))
                 with gr.Row():
                     approve_button = gr.Button("确认提交", variant="primary")
                     reject_button = gr.Button("拒绝")
+                    refresh_button = gr.Button("刷新观测")
+
+                ops_output = gr.Textbox(label="操作输出", lines=4, interactive=False)
+
                 with gr.Tabs():
-                    with gr.Tab("AgentRun"):
-                        runs_json = gr.Code(label="AgentRun JSON", language="json", lines=16)
+                    with gr.Tab("当前上下文"):
+                        context_json = gr.Code(
+                            label="Runtime Context",
+                            language="json",
+                            lines=22,
+                        )
                     with gr.Tab("ToolCall"):
-                        tool_calls_json = gr.Code(label="ToolCall JSON", language="json", lines=16)
+                        tool_calls_json = gr.Code(
+                            label="ToolCall JSON",
+                            language="json",
+                            lines=22,
+                        )
+                    with gr.Tab("AgentRun"):
+                        runs_json = gr.Code(
+                            label="AgentRun JSON",
+                            language="json",
+                            lines=22,
+                        )
                     with gr.Tab("Raw JSON"):
-                        raw_json = gr.Code(label="Latest Raw Response", language="json", lines=16)
+                        raw_json = gr.Code(
+                            label="Latest Raw Response",
+                            language="json",
+                            lines=22,
+                        )
+                    with gr.Tab("RAG 运维"):
+                        gr.Markdown(
+                            "重建索引会读取 `data/knowledge/*.md` 并写入 Milvus；"
+                            "RAG 评估会生成 `data/evaluation/latest_results.*`。"
+                        )
+                        offline_eval = gr.Checkbox(
+                            label="离线评估，仅检查 Markdown/评估脚本，不作为 Milvus 全链路验收",
+                            value=False,
+                        )
+                        with gr.Row():
+                            rebuild_rag_button = gr.Button("重建 RAG 索引")
+                            evaluate_rag_button = gr.Button("运行 RAG 评估")
+                        rag_output = gr.Textbox(
+                            label="RAG 操作输出",
+                            lines=18,
+                            interactive=False,
+                        )
 
         def create_ui(backend_url_value: str, customer_id_value: str):
             try:
                 result = create_conversation_callback(backend_url_value, customer_id_value)
             except DemoApiError as error:
                 raw = to_pretty_json(error.payload)
-                return "", "", [("创建会话", str(error))], None, format_pending_action(None), "{}", "{}", raw
+                return "", "", [("创建会话", str(error))], None, format_pending_action(None), "{}", "{}", "{}", raw
             return (
                 result.conversation_id,
                 result.conversation_id,
@@ -378,6 +535,7 @@ def build_app():
                 result.pending_markdown,
                 result.runs_json,
                 result.tool_calls_json,
+                result.context_json,
                 result.raw_json,
             )
 
@@ -414,6 +572,7 @@ def build_app():
                     format_pending_action(None),
                     "{}",
                     "{}",
+                    "{}",
                     to_pretty_json(error.payload),
                     "",
                     None,
@@ -426,6 +585,7 @@ def build_app():
                 result.pending_markdown,
                 result.runs_json,
                 result.tool_calls_json,
+                result.context_json,
                 result.raw_json,
                 "",
                 None,
@@ -457,6 +617,7 @@ def build_app():
                     format_pending_action(pending_action_value),
                     "{}",
                     "{}",
+                    "{}",
                     to_pretty_json(error.payload),
                 )
             return (
@@ -466,6 +627,7 @@ def build_app():
                 result.pending_markdown,
                 result.runs_json,
                 result.tool_calls_json,
+                result.context_json,
                 result.raw_json,
             )
 
@@ -480,6 +642,7 @@ def build_app():
                 pending_markdown,
                 runs_json,
                 tool_calls_json,
+                context_json,
                 raw_json,
             ],
         )
@@ -494,6 +657,7 @@ def build_app():
                 pending_markdown,
                 runs_json,
                 tool_calls_json,
+                context_json,
                 raw_json,
                 message,
                 image,
@@ -501,7 +665,12 @@ def build_app():
         )
         approve_button.click(
             lambda backend, customer, conv, action, history: confirm_ui(
-                backend, customer, conv, action, history, True
+                backend,
+                customer,
+                conv,
+                action,
+                history,
+                True,
             ),
             inputs=[backend_url, customer_id, conversation_state, pending_action_state, chatbot],
             outputs=[
@@ -511,12 +680,18 @@ def build_app():
                 pending_markdown,
                 runs_json,
                 tool_calls_json,
+                context_json,
                 raw_json,
             ],
         )
         reject_button.click(
             lambda backend, customer, conv, action, history: confirm_ui(
-                backend, customer, conv, action, history, False
+                backend,
+                customer,
+                conv,
+                action,
+                history,
+                False,
             ),
             inputs=[backend_url, customer_id, conversation_state, pending_action_state, chatbot],
             outputs=[
@@ -526,8 +701,28 @@ def build_app():
                 pending_markdown,
                 runs_json,
                 tool_calls_json,
+                context_json,
                 raw_json,
             ],
+        )
+        refresh_button.click(
+            refresh_observability_callback,
+            inputs=[backend_url, conversation_state, customer_id],
+            outputs=[runs_json, tool_calls_json, context_json, ops_output],
+        )
+        health_button.click(
+            health_check_callback,
+            inputs=[backend_url],
+            outputs=[ops_output],
+        )
+        rebuild_rag_button.click(
+            run_rag_index_callback,
+            outputs=[rag_output],
+        )
+        evaluate_rag_button.click(
+            run_rag_evaluation_callback,
+            inputs=[offline_eval],
+            outputs=[rag_output],
         )
 
     return app

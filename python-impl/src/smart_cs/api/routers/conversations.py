@@ -83,3 +83,13 @@ def list_agent_runs(
     service: ConversationService = Depends(get_service),
 ) -> dict:
     return service.list_agent_runs(conversation_id, customer_id)
+
+
+@router.get("/{conversation_id}/context")
+def current_context(
+    conversation_id: str,
+    customer_id: str = Query(min_length=1),
+    query: str | None = Query(default=None),
+    service: ConversationService = Depends(get_service),
+) -> dict:
+    return service.current_context(conversation_id, customer_id, query=query)

@@ -1,5 +1,4 @@
-# 测试 Gradio 演示层的消息和确认交互。
-
+# 测试 Gradio 演示层的消息、确认、上下文和运维回调。
 from __future__ import annotations
 
 import importlib.util
@@ -20,7 +19,6 @@ def load_demo_module():
 
 def test_extract_pending_action_returns_action_or_none() -> None:
     demo = load_demo_module()
-
     action = {"action_id": "A1", "action_type": "after_sales"}
 
     assert demo.extract_pending_action({"pending_action": action}) == action
@@ -151,6 +149,30 @@ def test_client_wraps_non_dict_success_payload(monkeypatch) -> None:
     assert demo.SmartCsApiClient("http://backend").health() == {"value": ["ok"]}
 
 
+def test_current_context_passes_customer_and_optional_query(monkeypatch) -> None:
+    demo = load_demo_module()
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["params"] = kwargs["params"]
+        return FakeResponse(200, {"context": {"session_facts": {"current_order_id": "O1001"}}})
+
+    monkeypatch.setattr(demo.requests, "request", fake_request)
+
+    response = demo.SmartCsApiClient("http://backend").current_context(
+        "conv-1",
+        "C001",
+        query="鞋底开胶",
+    )
+
+    assert response["context"]["session_facts"]["current_order_id"] == "O1001"
+    assert captured["method"] == "GET"
+    assert captured["url"] == "http://backend/api/conversations/conv-1/context"
+    assert captured["params"] == {"customer_id": "C001", "query": "鞋底开胶"}
+
+
 def test_send_message_with_image_passes_file_tuple_and_closes_file(
     monkeypatch,
     tmp_path: Path,
@@ -186,7 +208,7 @@ def test_send_message_with_image_passes_file_tuple_and_closes_file(
     assert captured["method"] == "POST"
     assert captured["url"] == "http://backend/api/conversations/conv-1/messages-with-image"
     assert captured["data"] == {"customer_id": "C001", "content": "O1001 鞋底开胶"}
-    assert captured["timeout"] == 30
+    assert captured["timeout"] == 180
     assert captured["filename"] == "damage.jpg"
     assert captured["content_type"] == "image/jpeg"
     assert captured["file_closed_during_request"] is False
@@ -197,6 +219,9 @@ def test_send_message_with_image_passes_file_tuple_and_closes_file(
 class FakeClient:
     def __init__(self) -> None:
         self.confirmed: list[tuple[str, str, str, bool]] = []
+
+    def health(self):
+        return {"status": "healthy"}
 
     def create_conversation(self, customer_id: str):
         return {"id": "conv-1", "customer_id": customer_id}
@@ -248,6 +273,16 @@ class FakeClient:
     def list_tool_calls(self, conversation_id: str, customer_id: str):
         return {"tool_calls": [{"tool_name": "draft_after_sales", "customer_id": customer_id}]}
 
+    def current_context(self, conversation_id: str, customer_id: str):
+        return {
+            "context": {
+                "recent_messages": [{"role": "user", "content": "O1001 鞋底开胶"}],
+                "session_facts": {"current_order_id": "O1001"},
+                "customer_memories": [],
+            },
+            "system_message": "Session facts:\n- current_order_id: O1001",
+        }
+
 
 def test_create_conversation_callback_returns_initial_state() -> None:
     demo = load_demo_module()
@@ -261,9 +296,10 @@ def test_create_conversation_callback_returns_initial_state() -> None:
     assert result.conversation_id == "conv-1"
     assert result.pending_action is None
     assert result.chat_history[-1][1] == "已创建会话 conv-1。"
+    assert "current_order_id" in result.context_json
 
 
-def test_send_callback_creates_conversation_when_missing_and_refreshes_audit() -> None:
+def test_send_callback_creates_conversation_when_missing_and_refreshes_observability() -> None:
     demo = load_demo_module()
 
     result = demo.send_message_callback(
@@ -281,12 +317,13 @@ def test_send_callback_creates_conversation_when_missing_and_refreshes_audit() -
     assert result.chat_history[-1][1] == "已为您生成售后申请草稿，请确认后提交。"
     assert "post_sales_agent" in result.runs_json
     assert "draft_after_sales" in result.tool_calls_json
+    assert "current_order_id" in result.context_json
 
 
-def test_send_callback_preserves_pending_action_when_audit_refresh_fails() -> None:
+def test_send_callback_preserves_pending_action_when_observability_refresh_fails() -> None:
     demo = load_demo_module()
 
-    class AuditFailingClient(FakeClient):
+    class ObservabilityFailingClient(FakeClient):
         def list_runs(self, conversation_id: str, customer_id: str):
             raise demo.DemoApiError(503, {"detail": "audit unavailable"})
 
@@ -297,7 +334,7 @@ def test_send_callback_preserves_pending_action_when_audit_refresh_fails() -> No
         message="O1001 鞋底开胶",
         image_path=None,
         chat_history=[],
-        client_factory=lambda _base_url: AuditFailingClient(),
+        client_factory=lambda _base_url: ObservabilityFailingClient(),
     )
 
     assert result.conversation_id == "conv-1"
@@ -312,7 +349,7 @@ def test_send_callback_preserves_pending_action_when_audit_refresh_fails() -> No
     assert "audit unavailable" in result.runs_json
     assert "audit unavailable" in result.tool_calls_json
     assert "pending_action" in result.raw_json
-    assert "audit unavailable" in result.raw_json
+    assert "Observability refresh failed" in result.raw_json
 
 
 def test_confirm_callback_requires_pending_action() -> None:
@@ -348,3 +385,91 @@ def test_confirm_callback_submits_pending_action_and_clears_panel() -> None:
     assert result.pending_action is None
     assert "售后申请已受理" in result.chat_history[-1][1]
     assert "ticket_id" in result.raw_json
+    assert "current_order_id" in result.context_json
+
+
+def test_refresh_observability_callback_requires_conversation() -> None:
+    demo = load_demo_module()
+
+    runs, tools, context, message = demo.refresh_observability_callback(
+        "http://backend",
+        "",
+        "C001",
+        client_factory=lambda _base_url: FakeClient(),
+    )
+
+    assert runs == "{}"
+    assert tools == "{}"
+    assert context == "{}"
+    assert message == "请先创建会话。"
+
+
+def test_refresh_observability_callback_returns_all_panels() -> None:
+    demo = load_demo_module()
+
+    runs, tools, context, message = demo.refresh_observability_callback(
+        "http://backend",
+        "conv-1",
+        "C001",
+        client_factory=lambda _base_url: FakeClient(),
+    )
+
+    assert "post_sales_agent" in runs
+    assert "draft_after_sales" in tools
+    assert "current_order_id" in context
+    assert message == "已刷新工程观测面板。"
+
+
+def test_health_check_callback_returns_backend_status() -> None:
+    demo = load_demo_module()
+
+    result = demo.health_check_callback(
+        "http://backend",
+        client_factory=lambda _base_url: FakeClient(),
+    )
+
+    assert "healthy" in result
+
+
+def test_run_project_script_captures_output(monkeypatch) -> None:
+    demo = load_demo_module()
+
+    class Completed:
+        stdout = "indexed"
+        stderr = ""
+        returncode = 0
+
+    def fake_run(command, **kwargs):
+        assert command[1].endswith("scripts\\index_knowledge.py") or command[1].endswith(
+            "scripts/index_knowledge.py"
+        )
+        assert kwargs["cwd"] == demo.ROOT
+        return Completed()
+
+    monkeypatch.setattr(demo.subprocess, "run", fake_run)
+
+    output = demo.run_rag_index_callback()
+
+    assert "indexed" in output
+    assert "exit_code=0" in output
+
+
+def test_run_rag_evaluation_callback_can_enable_offline(monkeypatch) -> None:
+    demo = load_demo_module()
+    captured = {}
+
+    class Completed:
+        stdout = "evaluated"
+        stderr = ""
+        returncode = 0
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return Completed()
+
+    monkeypatch.setattr(demo.subprocess, "run", fake_run)
+
+    output = demo.run_rag_evaluation_callback(True)
+
+    assert "--offline" in captured["command"]
+    assert "evaluated" in output

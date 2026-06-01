@@ -145,6 +145,24 @@ class ConversationService:
             "tool_calls": [self._tool_call_result(call) for call in tool_calls],
         }
 
+    def current_context(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        *,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        self.repository.require_conversation_owner(conversation_id, customer_id)
+        message = query if query is not None else self._latest_user_message(
+            conversation_id,
+            customer_id,
+        )
+        return self.runtime.inspect_context(
+            conversation_id,
+            customer_id,
+            message=message,
+        )
+
     def _conversation_tool_calls(
         self, conversation_id: str, customer_id: str
     ) -> list[ToolCall]:
@@ -159,6 +177,17 @@ class ConversationService:
             or call.arguments.get("action_id") in action_ids
             or (call.result or {}).get("action_id") in action_ids
         ]
+
+    def _latest_user_message(self, conversation_id: str, customer_id: str) -> str:
+        rows = self.repository.list_recent_messages(
+            conversation_id,
+            customer_id,
+            limit=10,
+        )
+        for row in reversed(rows):
+            if str(row.get("role") or "").lower() == "user":
+                return str(row.get("content") or "")
+        return ""
 
     def _require_demo_customer(self, customer_id: str) -> None:
         if not self.repository.customer_exists(customer_id):

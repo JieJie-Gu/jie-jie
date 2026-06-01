@@ -85,6 +85,7 @@ class RuntimeContextBuilder:
         message: str,
         visual_evidence: dict[str, Any] | None = None,
         asset_key: str | None = None,
+        record_memory_select: bool = True,
     ) -> dict[str, Any]:
         summary = self._conversation_summary(conversation_id, customer_id)
         recent_messages = self._recent_messages(conversation_id, customer_id)
@@ -96,6 +97,7 @@ class RuntimeContextBuilder:
             customer_id,
             message,
             intent=session_facts.get("current_intent"),
+            record_memory_select=record_memory_select,
         )
         pending = self._pending_action(conversation_id, customer_id)
         return {
@@ -193,6 +195,7 @@ class RuntimeContextBuilder:
         message: str,
         *,
         intent: str | None = None,
+        record_memory_select: bool = True,
     ) -> list[dict[str, Any]]:
         projected = self.memory_retrieval.search_active_memories(
             customer_id=customer_id,
@@ -201,7 +204,8 @@ class RuntimeContextBuilder:
             limit=self.memory_limit,
             max_chars=1200,
         )
-        self._record_memory_select(customer_id, message, intent, projected)
+        if record_memory_select:
+            self._record_memory_select(customer_id, message, intent, projected)
         return projected
 
     def _record_memory_select(

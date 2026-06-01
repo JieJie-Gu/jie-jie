@@ -368,6 +368,31 @@ class AgentRuntime:
             )
             return public
 
+    def inspect_context(
+        self,
+        conversation_id: str,
+        customer_id: str,
+        *,
+        message: str = "",
+        visual_evidence: dict[str, Any] | None = None,
+        asset_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Build the current prompt context without invoking the agent graph."""
+
+        self.executor.require_conversation_owner(conversation_id, customer_id)
+        context = self.context_builder.build(
+            conversation_id=conversation_id,
+            customer_id=customer_id,
+            message=message,
+            visual_evidence=visual_evidence,
+            asset_key=asset_key,
+            record_memory_select=False,
+        )
+        return {
+            "context": context,
+            "system_message": self.context_builder.system_message(context),
+        }
+
     def close(self) -> None:
         with self._lifecycle:
             self._closing = True
