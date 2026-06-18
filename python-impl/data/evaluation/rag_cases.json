@@ -8,25 +8,31 @@
   {
     "question": "退货商品需要保持什么状态？",
     "expected_answer_points": ["商品应保持完好"],
-    "expected_context_ids": ["after_sales_policy:售后政策 > 七天无理由:1"],
+    "expected_context_ids": ["after_sales_policy:售后政策 > 商品完好标准:1"],
+    "category": "after_sales"
+  },
+  {
+    "question": "退货运费按什么规则承担？",
+    "expected_answer_points": ["退货运费按订单适用规则"],
+    "expected_context_ids": ["after_sales_policy:售后政策 > 运费承担规则:4"],
     "category": "after_sales"
   },
   {
     "question": "已发货是什么意思？",
-    "expected_answer_points": ["包裹已经交给承运方"],
-    "expected_context_ids": ["shipping_policy:配送说明 > 发货状态:0"],
+    "expected_answer_points": ["包裹已经完成平台侧打包"],
+    "expected_context_ids": ["shipping_policy:配送说明 > 发货状态:1"],
     "category": "shipping"
   },
   {
-    "question": "退货运费按什么规则承担？",
-    "expected_answer_points": ["退货运费按订单适用规则承担"],
-    "expected_context_ids": ["after_sales_policy:售后政策 > 七天无理由:2"],
-    "category": "after_sales"
+    "question": "物流长时间不更新怎么办？",
+    "expected_answer_points": ["物流更新时间由承运方系统同步"],
+    "expected_context_ids": ["shipping_policy:配送说明 > 物流更新时间:2"],
+    "category": "shipping"
   },
   {
-    "question": "跑鞋怎么保养？",
-    "expected_answer_points": ["轻柔清洁并自然晾干"],
-    "expected_context_ids": ["product_guide:商品指南 > 跑鞋保养:1"],
+    "question": "鞋面沾污后怎么清洁？",
+    "expected_answer_points": ["温和清洁剂局部擦拭"],
+    "expected_context_ids": ["product_guide:商品指南 > 清洁保养:7"],
     "category": "product"
   },
   {
@@ -37,14 +43,8 @@
   },
   {
     "question": "什么时候需要人工处理？",
-    "expected_answer_points": ["用户明确要求"],
-    "expected_context_ids": ["faq:常见问题 > 何时转人工:0"],
-    "category": "faq"
-  },
-  {
-    "question": "确认后系统才会提交申请吗？",
-    "expected_answer_points": ["用户确认后系统才会提交申请"],
-    "expected_context_ids": ["faq:常见问题 > 如何申请售后:1"],
+    "expected_answer_points": ["用户明确要求人工处理"],
+    "expected_context_ids": ["faq:常见问题 > 何时转人工:1"],
     "category": "faq"
   }
 ]

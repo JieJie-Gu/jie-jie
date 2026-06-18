@@ -1,4 +1,4 @@
-# 测试 RAG 查询策略、证据过滤和 citation 结构。
+# 测试 RAG 查询分类、证据过滤和 citation 结构。
 from __future__ import annotations
 
 from langchain_core.documents import Document
@@ -18,7 +18,7 @@ class FakeStore:
         assert kwargs["ranker_params"] == {"k": 60}
         return [
             Document(
-                page_content="签收后七天内可以申请退货。商品应保持完好。",
+                page_content="签收后七天内可以申请退货。商品应保持完好并保留必要配件。",
                 metadata={
                     "document_id": "after_sales_policy",
                     "context_id": "after_sales_policy:售后政策 > 七天无理由:0",
@@ -62,10 +62,19 @@ class ReturnPeriodOnlyStore:
 def test_query_category_filter_is_not_user_supplied_expression() -> None:
     policy = QueryPolicy()
 
-    rewritten, expression = policy.prepare('退货什么时候截止 or category != "after_sales')
+    rewritten, expression = policy.prepare('退货什么时候截止 or category != "after_sales"')
 
     assert "退货" in rewritten
     assert expression == 'category == "after_sales"'
+
+
+def test_query_policy_routes_common_categories() -> None:
+    policy = QueryPolicy()
+
+    assert policy.prepare("物流什么时候更新")[1] == 'category == "shipping"'
+    assert policy.prepare("跑鞋怎么保养")[1] == 'category == "product"'
+    assert policy.prepare("鞋面沾污后怎么清洁")[1] == 'category == "product"'
+    assert policy.prepare("什么时候转人工")[1] == 'category == "faq"'
 
 
 def test_knowledge_answer_exposes_section_citation() -> None:

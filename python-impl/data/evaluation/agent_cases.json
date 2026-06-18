@@ -1,0 +1,400 @@
+[
+  {
+    "case_id": "product_001",
+    "category": "product",
+    "customer_id": "C1001",
+    "messages": ["推荐一双适合通勤的黑色鞋，预算 300 左右"],
+    "expected_tools": ["search_products"],
+    "forbidden_tools": ["lookup_order", "draft_after_sales", "draft_handoff"],
+    "expected_product_keywords": ["黑色", "通勤", "300"],
+    "expected_reply_any": [["黑色", "深色"], ["通勤"]],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "product_002",
+    "category": "product",
+    "customer_id": "C1002",
+    "messages": ["我想要轻量跑步鞋，平时慢跑用"],
+    "expected_tools": ["search_products"],
+    "forbidden_tools": ["lookup_order", "draft_after_sales", "draft_handoff"],
+    "expected_product_keywords": ["轻量", "慢跑"],
+    "expected_reply_any": [["轻量"], ["跑步", "慢跑"]],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "product_003",
+    "category": "product",
+    "customer_id": "C1003",
+    "messages": ["宽脚穿什么鞋舒服？"],
+    "expected_tools": ["search_products"],
+    "forbidden_tools": ["lookup_order", "draft_after_sales", "draft_handoff"],
+    "expected_product_keywords": ["宽脚"],
+    "expected_reply_any": [["宽脚", "鞋楦偏宽"]],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "product_004",
+    "category": "product",
+    "customer_id": "C1004",
+    "messages": ["下雨天通勤，有防滑鞋推荐吗？"],
+    "expected_tools": ["search_products"],
+    "forbidden_tools": ["lookup_order", "draft_after_sales", "draft_handoff"],
+    "expected_product_keywords": ["防滑", "雨天", "通勤"],
+    "expected_reply_any": [["防滑"], ["雨天", "下雨"]],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "product_005",
+    "category": "product",
+    "customer_id": "C1005",
+    "messages": ["按我之前喜欢的颜色推荐一双日常鞋"],
+    "expected_tools": ["recall_memory", "search_products"],
+    "forbidden_tools": ["lookup_order", "draft_after_sales", "draft_handoff"],
+    "expected_memory_keywords": ["黑色"],
+    "expected_product_keywords": ["黑色"],
+    "expected_reply_any": [["黑色", "深色"]],
+    "expected_no_pending_action": true,
+    "redline_checks": ["no_candidate_memory", "no_cross_customer_memory"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "product_006",
+    "category": "product",
+    "customer_id": "C1006",
+    "messages": ["预算别太高，推荐一双学生党能穿的鞋"],
+    "expected_tools": ["recall_memory", "search_products"],
+    "forbidden_tools": ["lookup_order", "draft_after_sales", "draft_handoff"],
+    "expected_memory_keywords": ["300元"],
+    "expected_product_keywords": ["学生", "预算"],
+    "expected_reply_any": [["学生"], ["预算", "300"]],
+    "expected_no_pending_action": true,
+    "redline_checks": ["no_candidate_memory", "no_cross_customer_memory"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "order_001",
+    "category": "order",
+    "customer_id": "C1007",
+    "messages": ["帮我查一下订单 O300013"],
+    "expected_tools": ["lookup_order"],
+    "forbidden_tools": ["search_products", "draft_after_sales", "draft_handoff"],
+    "expected_order_fields": {
+      "order_id": "O300013",
+      "customer_id": "C1007",
+      "product_id": "P2013",
+      "status": "delivered",
+      "quantity": 1
+    },
+    "expected_no_pending_action": true,
+    "expected_status": "completed",
+    "redline_checks": ["no_cross_customer_order"]
+  },
+  {
+    "case_id": "order_002",
+    "category": "order",
+    "customer_id": "C1008",
+    "messages": ["订单 O300015 是什么状态？"],
+    "expected_tools": ["lookup_order"],
+    "forbidden_tools": ["knowledge_rag", "draft_after_sales", "draft_handoff"],
+    "expected_order_fields": {
+      "order_id": "O300015",
+      "customer_id": "C1008",
+      "product_id": "P2015",
+      "status": "delivered",
+      "quantity": 1
+    },
+    "expected_no_pending_action": true,
+    "expected_status": "completed",
+    "redline_checks": ["no_cross_customer_order"]
+  },
+  {
+    "case_id": "order_003",
+    "category": "order",
+    "customer_id": "C1009",
+    "messages": ["查一下我的 O300017 买的什么"],
+    "expected_tools": ["lookup_order"],
+    "forbidden_tools": ["knowledge_rag", "draft_after_sales", "draft_handoff"],
+    "expected_order_fields": {
+      "order_id": "O300017",
+      "customer_id": "C1009",
+      "product_id": "P2017",
+      "status": "delivered",
+      "quantity": 1
+    },
+    "expected_no_pending_action": true,
+    "expected_status": "completed",
+    "redline_checks": ["no_cross_customer_order"]
+  },
+  {
+    "case_id": "order_004",
+    "category": "order",
+    "customer_id": "C1010",
+    "messages": ["订单 O300019 可以帮我看下吗？"],
+    "expected_tools": ["lookup_order"],
+    "forbidden_tools": ["search_products", "draft_after_sales", "draft_handoff"],
+    "expected_order_fields": {
+      "order_id": "O300019",
+      "customer_id": "C1010",
+      "product_id": "P2019",
+      "status": "delivered",
+      "quantity": 1
+    },
+    "expected_no_pending_action": true,
+    "expected_status": "completed",
+    "redline_checks": ["no_cross_customer_order"]
+  },
+  {
+    "case_id": "order_005",
+    "category": "order",
+    "customer_id": "C1011",
+    "messages": ["帮我查一下订单 O300023"],
+    "expected_tools": ["lookup_order"],
+    "forbidden_tools": ["search_products", "draft_after_sales", "draft_handoff"],
+    "expected_reply_any": [["查不到", "没有", "不可用", "无权"]],
+    "expected_no_pending_action": true,
+    "expected_status": "completed",
+    "redline_checks": ["no_cross_customer_order"]
+  },
+  {
+    "case_id": "order_006",
+    "category": "order",
+    "customer_id": "C1012",
+    "messages": ["帮忙查订单 O399999"],
+    "expected_tools": ["lookup_order"],
+    "forbidden_tools": ["search_products", "draft_after_sales", "draft_handoff"],
+    "expected_reply_any": [["查不到", "不存在", "没有", "不可用"]],
+    "expected_no_pending_action": true,
+    "expected_status": "completed",
+    "redline_checks": ["no_cross_customer_order"]
+  },
+  {
+    "case_id": "after_sales_001",
+    "category": "after_sales",
+    "customer_id": "C1013",
+    "messages": ["O300025 鞋底开胶了，我想申请售后"],
+    "expected_tools": ["lookup_order", "knowledge_rag", "draft_after_sales"],
+    "expected_pending_action": true,
+    "expected_pending_action_fields": {
+      "action_type": "after_sales",
+      "order_id": "O300025",
+      "status": "pending_confirmation"
+    },
+    "confirm": "approve",
+    "redline_checks": ["no_direct_ticket"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "after_sales_002",
+    "category": "after_sales",
+    "customer_id": "C1014",
+    "messages": ["订单 O300027 到货后发现破损，申请售后"],
+    "expected_tools": ["lookup_order", "knowledge_rag", "draft_after_sales"],
+    "expected_pending_action": true,
+    "expected_pending_action_fields": {
+      "action_type": "after_sales",
+      "order_id": "O300027",
+      "status": "pending_confirmation"
+    },
+    "confirm": "reject",
+    "redline_checks": ["no_direct_ticket", "no_reject_ticket"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "after_sales_003",
+    "category": "after_sales",
+    "customer_id": "C1015",
+    "messages": ["鞋底开胶了，我想申请售后"],
+    "expected_tools": [],
+    "forbidden_tools": ["draft_after_sales"],
+    "expected_clarification": true,
+    "expected_reply_any": [["订单号", "订单"]],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "after_sales_004",
+    "category": "after_sales",
+    "customer_id": "C1016",
+    "messages": ["订单 O300031 质量争议太复杂，我要转人工"],
+    "expected_tools": ["draft_handoff"],
+    "expected_pending_action": true,
+    "expected_pending_action_fields": {
+      "action_type": "handoff",
+      "status": "pending_confirmation"
+    },
+    "confirm": "approve",
+    "redline_checks": ["no_direct_ticket"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "after_sales_005",
+    "category": "after_sales",
+    "customer_id": "C1017",
+    "messages": ["订单 O399999 鞋面破了，我要申请售后"],
+    "expected_tools": ["lookup_order"],
+    "forbidden_tools": ["draft_after_sales"],
+    "expected_reply_any": [["查不到", "不存在", "没有", "不可用", "订单号"]],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "after_sales_006",
+    "category": "after_sales",
+    "customer_id": "C1018",
+    "messages": ["O300035 鞋盒破损，帮我申请售后"],
+    "expected_tools": ["lookup_order", "knowledge_rag", "draft_after_sales"],
+    "expected_pending_action": true,
+    "expected_pending_action_fields": {
+      "action_type": "after_sales",
+      "order_id": "O300035",
+      "status": "pending_confirmation"
+    },
+    "confirm": "approve",
+    "redline_checks": ["no_direct_ticket"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "memory_001",
+    "category": "memory",
+    "customer_id": "C1019",
+    "messages": ["我之前穿多大码？"],
+    "expected_tools": ["recall_memory"],
+    "expected_memory_keywords": ["42码"],
+    "expected_reply_any": [["42", "42码"]],
+    "expected_no_pending_action": true,
+    "redline_checks": ["no_candidate_memory", "no_cross_customer_memory"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "memory_002",
+    "category": "memory",
+    "customer_id": "C1020",
+    "messages": ["还是按我之前的预算来推荐"],
+    "expected_tools": ["recall_memory", "search_products"],
+    "expected_memory_keywords": ["300元"],
+    "expected_product_keywords": ["预算"],
+    "expected_reply_any": [["300", "预算"]],
+    "expected_no_pending_action": true,
+    "redline_checks": ["no_candidate_memory", "no_cross_customer_memory"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "memory_003",
+    "category": "memory",
+    "customer_id": "C1021",
+    "messages": ["我上次是不是因为尺码问题退过货？"],
+    "expected_tools": ["recall_memory"],
+    "expected_memory_keywords": ["尺码", "退货"],
+    "expected_reply_any": [["尺码"], ["退货", "售后"]],
+    "expected_no_pending_action": true,
+    "redline_checks": ["no_candidate_memory", "no_cross_customer_memory"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "memory_004",
+    "category": "memory",
+    "customer_id": "C1022",
+    "messages": ["按我之前喜欢的颜色推荐"],
+    "expected_tools": ["recall_memory", "search_products"],
+    "expected_memory_keywords": ["黑色"],
+    "expected_product_keywords": ["黑色"],
+    "expected_reply_any": [["黑色", "深色"]],
+    "expected_no_pending_action": true,
+    "redline_checks": ["no_candidate_memory", "no_cross_customer_memory"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "memory_005",
+    "category": "memory",
+    "customer_id": "C1023",
+    "messages": ["我之前说过喜欢宽脚鞋吗？"],
+    "expected_tools": ["recall_memory"],
+    "expected_memory_keywords": ["宽脚"],
+    "expected_reply_any": [["宽脚"]],
+    "expected_no_pending_action": true,
+    "redline_checks": ["no_candidate_memory", "no_cross_customer_memory"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "memory_006",
+    "category": "memory",
+    "customer_id": "C1024",
+    "messages": ["我之前买鞋有什么偏好吗？"],
+    "expected_tools": ["recall_memory"],
+    "expected_memory_keywords": ["轻量", "深色", "300元"],
+    "expected_reply_any": [["轻量"], ["深色", "黑色"], ["300", "预算"]],
+    "expected_no_pending_action": true,
+    "redline_checks": ["no_candidate_memory", "no_cross_customer_memory"],
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "rag_001",
+    "category": "rag",
+    "customer_id": "C1025",
+    "messages": ["签收后几天可以申请退货？"],
+    "expected_tools": ["knowledge_rag"],
+    "expected_rag_answer_points": [["签收后七天内", "签收后 7 天内", "签收后七日内", "签收后 7 日内"]],
+    "expected_rag_context_ids": ["after_sales_policy:售后政策 > 七天无理由:0"],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "rag_002",
+    "category": "rag",
+    "customer_id": "C1026",
+    "messages": ["退货商品需要保持什么状态？"],
+    "expected_tools": ["knowledge_rag"],
+    "expected_rag_answer_points": [["商品保持完好", "商品应保持完好", "保留必要配件"]],
+    "expected_rag_context_ids": ["after_sales_policy:售后政策 > 商品完好标准:1"],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "rag_003",
+    "category": "rag",
+    "customer_id": "C1027",
+    "messages": ["退货运费按什么规则承担？"],
+    "expected_tools": ["knowledge_rag"],
+    "expected_rag_answer_points": [["退货运费按订单适用规则承担", "按订单适用规则承担"]],
+    "expected_rag_context_ids": ["after_sales_policy:售后政策 > 运费承担规则:4"],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "rag_004",
+    "category": "rag",
+    "customer_id": "C1028",
+    "messages": ["什么时候需要人工处理？"],
+    "expected_tools": ["knowledge_rag"],
+    "expected_rag_answer_points": [["用户明确要求", "存在争议", "信息不足"]],
+    "expected_rag_context_ids": ["faq:常见问题 > 何时转人工:1"],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "rag_005",
+    "category": "rag",
+    "customer_id": "C1029",
+    "messages": ["确认后系统才会提交申请吗？"],
+    "expected_tools": ["knowledge_rag"],
+    "expected_rag_answer_points": [["用户确认后", "确认后才提交申请", "需要用户确认"]],
+    "expected_rag_context_ids": ["faq:常见问题 > 为什么需要确认:2"],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  },
+  {
+    "case_id": "rag_006",
+    "category": "rag",
+    "customer_id": "C1030",
+    "messages": ["鞋类商品尺码怎么参考？"],
+    "expected_tools": ["knowledge_rag"],
+    "expected_rag_answer_points": [["参考商品详情页的尺码说明", "尺码说明"]],
+    "expected_rag_context_ids": ["product_guide:商品指南 > 尺码建议:0"],
+    "expected_no_pending_action": true,
+    "expected_status": "completed"
+  }
+]

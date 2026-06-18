@@ -20,7 +20,7 @@ def main() -> None:
     documents = load_knowledge_documents(ROOT / "data" / "knowledge")
     embeddings = LocalSentenceEmbeddings(settings.embedding_model)
     build_hybrid_store(settings, embeddings, documents, drop_old=True)
-    print(f"Indexed {len(documents)} knowledge sentence windows into {settings.milvus_collection}.")
+    print(f"Indexed {len(documents)} knowledge sections into {settings.milvus_collection}.")
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     vision_model: str | None = None
     milvus_uri: str = "http://localhost:19530"
     milvus_collection: str = "smart_cs_knowledge"
-    memory_vector_enabled: bool = False
+    memory_vector_enabled: bool = True
     memory_milvus_collection: str = "smart_cs_memories"
     embedding_model: str = "BAAI/bge-m3"
     rag_enabled: bool = True
