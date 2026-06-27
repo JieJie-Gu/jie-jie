@@ -41,7 +41,10 @@ def hybrid_store_kwargs(settings: Settings, *, collection_name: str) -> dict:
     return {
         "builtin_function": BM25BuiltInFunction(analyzer_params={"type": "chinese"}),
         "vector_field": VECTOR_FIELDS,
-        "connection_args": {"uri": settings.milvus_uri},
+        "connection_args": {
+            "uri": settings.milvus_uri,
+            "timeout": settings.milvus_timeout_seconds,
+        },
         "collection_name": collection_name,
         "consistency_level": "Strong",
         "index_params": hybrid_index_params(),
@@ -67,6 +70,11 @@ class _OrmAliasMilvus(Milvus):
         if connections.has_connection(self.alias):
             return
         connections.connect(alias=self.alias, **self._connection_args)
+
+    def collection_exists(self) -> bool:
+        """Return whether the configured collection already exists."""
+
+        return bool(self.client.has_collection(collection_name=self.collection_name))
 
 
 def build_hybrid_store(

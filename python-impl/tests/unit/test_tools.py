@@ -31,19 +31,25 @@ def repo(tmp_path):
     return repository
 
 
-def test_order_lookup_rejects_another_customer_and_audits_rejection(repo) -> None:
+def test_order_lookup_returns_safe_business_rejection_and_audits_it(repo) -> None:
     tools = AuthorizedToolExecutor(repo)
 
-    with pytest.raises(ToolPermissionError):
-        tools.invoke(
-            "lookup_order",
-            {"customer_id": "C002", "order_id": "O1001"},
-            caller_agent="PostSalesAgent",
-        )
+    result = tools.invoke(
+        "lookup_order",
+        {"customer_id": "C002", "order_id": "O1001"},
+        caller_agent="PostSalesAgent",
+    )
 
     calls = repo.list_tool_calls()
+    assert result == {
+        "status": "order_unavailable",
+        "reason_code": "ORDER_UNAVAILABLE",
+        "message": "无法查询该订单，请检查订单号或确认订单归属。",
+    }
     assert calls[-1].tool_name == "lookup_order"
     assert calls[-1].status == "rejected"
+    assert calls[-1].error_type == "BusinessToolRejection"
+    assert calls[-1].result == result
 
 
 def test_after_sales_only_creates_draft_before_confirmation(repo) -> None:

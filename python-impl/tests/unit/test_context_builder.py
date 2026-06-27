@@ -37,6 +37,12 @@ class Memory:
 
 
 class DummyRepository:
+    def __init__(self) -> None:
+        self.tool_calls: list[dict[str, Any]] = []
+
+    def record_tool_call(self, **kwargs) -> None:
+        self.tool_calls.append(kwargs)
+
     def get_conversation_summary(self, conversation_id: str, customer_id: str) -> Summary:
         assert conversation_id == "conv-1"
         assert customer_id == "C001"
@@ -144,8 +150,9 @@ def test_context_builder_reads_summary_active_memories_and_pending_action() -> N
 
 def test_context_builder_uses_injected_memory_retrieval_service() -> None:
     retrieval = RecordingMemoryRetrieval()
+    repository = DummyRepository()
     context = RuntimeContextBuilder(
-        DummyRepository(),
+        repository,
         RecordingMemoryStore(),
         memory_retrieval=retrieval,
     ).build(
@@ -166,6 +173,7 @@ def test_context_builder_uses_injected_memory_retrieval_service() -> None:
     ]
     assert "value" not in context["customer_memories"][0]
     assert "evidence" not in context["customer_memories"][0]
+    assert repository.tool_calls[-1]["arguments"]["conversation_id"] == "conv-1"
 
 
 def test_context_builder_formats_compact_system_context() -> None:

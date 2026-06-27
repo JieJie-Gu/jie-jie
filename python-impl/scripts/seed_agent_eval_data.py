@@ -184,23 +184,47 @@ def seed_agent_eval_data(database_url: str | None = None, *, reset_eval: bool = 
 
 
 def _reset_eval_data(session) -> None:
-    eval_conversation_ids = [f"eval-conv-{customer_id}" for customer_id in CUSTOMER_IDS]
+    seeded_conversation_ids = [f"eval-conv-{customer_id}" for customer_id in CUSTOMER_IDS]
+    eval_conversation_ids = list(
+        session.scalars(
+            select(Conversation.id).where(
+                (Conversation.customer_id.in_(CUSTOMER_IDS))
+                | (Conversation.id.in_(seeded_conversation_ids))
+            )
+        )
+    )
     eval_action_ids = list(
         session.scalars(
             select(PendingAction.id).where(
                 (PendingAction.customer_id.in_(CUSTOMER_IDS))
                 | (PendingAction.conversation_id.in_(eval_conversation_ids))
+                | (PendingAction.order_id.in_(ORDER_IDS))
             )
         )
     )
     if eval_action_ids:
         session.execute(delete(Ticket).where(Ticket.action_id.in_(eval_action_ids)))
-    session.execute(delete(ToolCall).where(ToolCall.customer_id.in_(CUSTOMER_IDS)))
+    session.execute(
+        delete(ToolCall).where(
+            (ToolCall.customer_id.in_(CUSTOMER_IDS))
+            | (ToolCall.arguments["conversation_id"].as_string().in_(eval_conversation_ids))
+        )
+    )
     session.execute(delete(AgentRun).where(AgentRun.conversation_id.in_(eval_conversation_ids)))
     if eval_action_ids:
         session.execute(delete(PendingAction).where(PendingAction.id.in_(eval_action_ids)))
-    session.execute(delete(ConversationSummary).where(ConversationSummary.conversation_id.in_(eval_conversation_ids)))
-    session.execute(delete(Message).where(Message.conversation_id.in_(eval_conversation_ids)))
+    session.execute(
+        delete(ConversationSummary).where(
+            (ConversationSummary.conversation_id.in_(eval_conversation_ids))
+            | (ConversationSummary.customer_id.in_(CUSTOMER_IDS))
+        )
+    )
+    session.execute(
+        delete(Message).where(
+            (Message.conversation_id.in_(eval_conversation_ids))
+            | (Message.customer_id.in_(CUSTOMER_IDS))
+        )
+    )
     session.execute(delete(Conversation).where(Conversation.id.in_(eval_conversation_ids)))
     session.execute(delete(MemoryRecord).where(MemoryRecord.owner_id.in_(CUSTOMER_IDS)))
     session.execute(delete(Order).where(Order.id.in_(ORDER_IDS)))

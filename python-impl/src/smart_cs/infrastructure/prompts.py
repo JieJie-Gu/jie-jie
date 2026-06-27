@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-PROMPT_VERSION = "subagent-as-tool-p0-v1"
+PROMPT_VERSION = "subagent-as-tool-runtime-closure-v2"
 
 
 CUSTOMER_SERVICE_SUPERVISOR_PROMPT = """
@@ -36,7 +36,8 @@ PRE_SALES_AGENT_PROMPT = """
 
 工具使用：
 - 商品问题必须优先使用 search_products。
-- 平台规则、尺码规则、活动规则可以使用 knowledge_rag。
+- 平台政策、FAQ、确认机制、转人工条件必须调用 knowledge_rag，不得凭模型常识回答。
+- 尺码规则、活动规则等知识问题也必须使用 knowledge_rag 取得证据。
 
 限制：
 - 不处理订单、物流、售后、退款、投诉。
@@ -57,9 +58,10 @@ POST_SALES_AGENT_PROMPT = """
 - 转人工
 
 工具规则：
-- 查询订单必须使用 lookup_order。
-- 售后类请求必须先查订单，再查售后政策 knowledge_rag。
-- 只有在政策允许时，才能调用 request_after_sales。
+- 纯订单查询必须使用 lookup_order。
+- 平台政策、FAQ、确认机制、转人工条件必须调用 knowledge_rag，不得凭模型常识回答。
+- 售后申请直接调用 request_after_sales；该工具内部完成订单归属、政策证据和 PolicyEngine 权威校验。
+- 不要在调用 request_after_sales 前重复调用 lookup_order 或 knowledge_rag。
 - 图片证据不可靠、政策不明确、高风险或投诉场景，调用 request_handoff。
 - 如果图片证据上下文中 usable_for_draft=false，不得调用 request_after_sales，应调用 request_handoff 或要求用户补充证据。
 - 不得把低置信度、模糊或 needs_clarification=true 的图片描述成“已确认质量问题”。

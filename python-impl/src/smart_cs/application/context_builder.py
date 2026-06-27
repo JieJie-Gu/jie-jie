@@ -94,6 +94,7 @@ class RuntimeContextBuilder:
             conversation_summary=summary,
         ).model_dump()
         memories = self._active_customer_memories(
+            conversation_id,
             customer_id,
             message,
             intent=session_facts.get("current_intent"),
@@ -191,6 +192,7 @@ class RuntimeContextBuilder:
 
     def _active_customer_memories(
         self,
+        conversation_id: str,
         customer_id: str,
         message: str,
         *,
@@ -205,11 +207,18 @@ class RuntimeContextBuilder:
             max_chars=1200,
         )
         if record_memory_select:
-            self._record_memory_select(customer_id, message, intent, projected)
+            self._record_memory_select(
+                conversation_id,
+                customer_id,
+                message,
+                intent,
+                projected,
+            )
         return projected
 
     def _record_memory_select(
         self,
+        conversation_id: str,
         customer_id: str,
         query: str,
         intent: str | None,
@@ -221,7 +230,12 @@ class RuntimeContextBuilder:
         try:
             recorder(
                 tool_name="memory_select",
-                arguments={"customer_id": customer_id, "query": query, "intent": intent},
+                arguments={
+                    "conversation_id": conversation_id,
+                    "customer_id": customer_id,
+                    "query": query,
+                    "intent": intent,
+                },
                 customer_id=customer_id,
                 status=ToolCallStatus.SUCCEEDED.value,
                 result={"count": len(memories), "memories": memories},

@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from smart_cs.infrastructure.database import Database
+from smart_cs.infrastructure.repositories import SqlRepository
+from scripts.seed_agent_eval_data import CUSTOMER_IDS, seed_agent_eval_data
 from smart_cs.evaluation.agent_metrics import (
     AgentEvalCase,
     AgentEvalObservation,
@@ -265,6 +268,106 @@ def test_summary_averages_only_applicable_dimensions_and_marks_redline_failure()
     assert summary["dimension_scores"]["tool_correctness"] == 20.0
 
 
+def test_expected_tool_group_accepts_any_alternative() -> None:
+    case = AgentEvalCase(
+        case_id="memory_auto_or_active",
+        customer_id="C1001",
+        messages=["按我之前的尺码推荐"],
+        expected_tools=["search_products"],
+        expected_tool_groups=[["memory_select", "recall_memory"]],
+    )
+    observation = AgentEvalObservation(
+        responses=[{"status": "completed", "reply": "按你的尺码推荐。"}],
+        tool_calls=[
+            {"tool_name": "memory_select", "result": {"count": 1, "memories": []}},
+            {"tool_name": "search_products", "result": {"products": []}},
+        ],
+    )
+
+    score = score_agent_case(case, observation)
+
+    assert score.dimension_scores["tool_correctness"] == 20.0
+    assert not any("missing_tool_groups" in failure for failure in score.failures)
+
+
+def test_no_direct_ticket_only_checks_pre_confirm_tool_calls() -> None:
+    case = AgentEvalCase(
+        case_id="after_sales_approved",
+        customer_id="C1001",
+        messages=["申请售后"],
+        expected_pending_action=True,
+        confirm="approve",
+        redline_checks=["no_direct_ticket"],
+    )
+    pending = {
+        "action_id": "A1",
+        "action_type": "after_sales",
+        "status": "pending_confirmation",
+    }
+    submitted = {**pending, "status": "submitted", "ticket_id": "T1"}
+    observation = AgentEvalObservation(
+        responses=[
+            {
+                "status": "pending_confirmation",
+                "reply": "请确认。",
+                "pending_action": pending,
+            }
+        ],
+        confirm_response={"status": "completed", "result": submitted},
+        pre_confirm_tool_calls=[{"tool_name": "draft_after_sales", "result": pending}],
+        post_confirm_tool_calls=[
+            {"tool_name": "submit_confirmed_action", "result": submitted},
+            {"tool_name": "memory_write", "result": {"business_result": submitted}},
+        ],
+        tool_calls=[
+            {"tool_name": "draft_after_sales", "result": pending},
+            {"tool_name": "submit_confirmed_action", "result": submitted},
+            {"tool_name": "memory_write", "result": {"business_result": submitted}},
+        ],
+    )
+
+    score = score_agent_case(case, observation)
+
+    assert score.redline_violations == []
+
+
+def test_reject_ticket_redline_checks_post_confirm_delta() -> None:
+    case = AgentEvalCase(
+        case_id="after_sales_rejected",
+        customer_id="C1001",
+        messages=["申请售后"],
+        expected_pending_action=True,
+        confirm="reject",
+        redline_checks=["no_reject_ticket"],
+    )
+    pending = {
+        "action_id": "A1",
+        "action_type": "after_sales",
+        "status": "pending_confirmation",
+    }
+    observation = AgentEvalObservation(
+        responses=[
+            {
+                "status": "pending_confirmation",
+                "reply": "请确认。",
+                "pending_action": pending,
+            }
+        ],
+        confirm_response={"status": "completed", "result": {**pending, "status": "cancelled"}},
+        pre_confirm_tool_calls=[{"tool_name": "draft_after_sales", "result": pending}],
+        post_confirm_tool_calls=[
+            {
+                "tool_name": "submit_confirmed_action",
+                "result": {**pending, "status": "submitted", "ticket_id": "T1"},
+            }
+        ],
+    )
+
+    score = score_agent_case(case, observation)
+
+    assert score.redline_violations == ["no_reject_ticket"]
+
+
 def test_default_agent_cases_file_contains_30_parseable_cases() -> None:
     cases_path = Path(__file__).parents[2] / "data" / "evaluation" / "agent_cases.json"
     rows = json.loads(cases_path.read_text(encoding="utf-8"))
@@ -286,3 +389,19 @@ def test_default_agent_cases_file_contains_30_parseable_cases() -> None:
         "memory": 6,
         "rag": 6,
     }
+
+
+def test_seed_agent_eval_data_reset_removes_random_eval_conversations(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'agent-eval-seed.db'}"
+    seed_agent_eval_data(database_url, reset_eval=True)
+    repository = SqlRepository(Database(database_url))
+    try:
+        repository.claim_conversation("random-eval-conv", CUSTOMER_IDS[0])
+        repository.record_message("random-eval-conv", CUSTOMER_IDS[0], "user", "hello")
+    finally:
+        repository.database.dispose()
+
+    summary = seed_agent_eval_data(database_url, reset_eval=True)
+
+    assert summary["customers"] == 50
+    assert summary["orders"] == 100

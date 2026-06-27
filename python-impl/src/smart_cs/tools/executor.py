@@ -8,7 +8,7 @@ from time import perf_counter
 from typing import Any
 
 from smart_cs.domain.enums import ActionStatus, ActionType, ToolCallStatus
-from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
+from smart_cs.domain.errors import BusinessToolRejection, InvalidActionState, ToolPermissionError
 from smart_cs.domain.models import Order, PendingAction, Product, Ticket
 from smart_cs.domain.repositories import CustomerFactsRepository
 from smart_cs.tools.customer_tools import CUSTOMER_TOOL_SCHEMAS
@@ -166,7 +166,15 @@ class AuthorizedToolExecutor:
     def _lookup_order(self, arguments: dict[str, Any]) -> dict[str, Any]:
         customer_id = str(arguments["customer_id"])
         order_id = str(arguments["order_id"])
-        order = self._owned_order(customer_id, order_id)
+        order = self.repository.get_owned_order(customer_id, order_id)
+        if order is None:
+            raise BusinessToolRejection(
+                {
+                    "status": "order_unavailable",
+                    "reason_code": "ORDER_UNAVAILABLE",
+                    "message": "无法查询该订单，请检查订单号或确认订单归属。",
+                }
+            )
         return self._order_result(order)
 
     def _draft_after_sales(self, arguments: dict[str, Any], session: Any) -> dict[str, Any]:
@@ -253,6 +261,17 @@ class AuthorizedToolExecutor:
         customer_id = arguments.get("customer_id")
         try:
             result = operation()
+        except BusinessToolRejection as error:
+            self.repository.record_tool_call(
+                tool_name=tool_name,
+                arguments=arguments,
+                customer_id=str(customer_id) if customer_id is not None else None,
+                status=ToolCallStatus.REJECTED.value,
+                result=error.result,
+                error_type=type(error).__name__,
+                duration_ms=self._duration_ms(started),
+            )
+            return error.result
         except Exception as error:
             self.repository.record_tool_call(
                 tool_name=tool_name,
@@ -366,4 +385,10 @@ class AuthorizedToolExecutor:
         return result
 
 
-__all__ = ["AuthorizedToolExecutor", "InvalidActionState", "ToolPermissionError", "TurnFence"]
+__all__ = [
+    "AuthorizedToolExecutor",
+    "BusinessToolRejection",
+    "InvalidActionState",
+    "ToolPermissionError",
+    "TurnFence",
+]

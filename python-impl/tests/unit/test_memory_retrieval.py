@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from langchain_core.documents import Document
+import pytest
 
 from smart_cs.application.memory_retrieval import (
     MemoryRetrievalService,
@@ -62,13 +63,24 @@ class FakeMemoryStore:
 
 
 class FakeVectorStore:
-    def __init__(self, documents=None, *, fail_search: bool = False, fail_delete: bool = False):
+    def __init__(
+        self,
+        documents=None,
+        *,
+        fail_search: bool = False,
+        fail_delete: bool = False,
+        collection_exists: bool | None = None,
+    ):
         self.documents = documents or []
         self.fail_search = fail_search
         self.fail_delete = fail_delete
         self.added = []
         self.deleted = []
         self.search_kwargs = []
+        self._collection_exists = collection_exists
+
+    def collection_exists(self):
+        return self._collection_exists
 
     def add_documents(self, documents, **kwargs):
         self.added.append((documents, kwargs))
@@ -260,6 +272,24 @@ def test_upsert_raises_when_stale_delete_fails() -> None:
         assert "delete failed" in str(error) or "stale memory vector" in str(error)
     else:
         raise AssertionError("expected delete failure")
+
+
+def test_first_upsert_skips_stale_delete_when_collection_does_not_exist() -> None:
+    store = FakeVectorStore(fail_delete=True, collection_exists=False)
+    index = MemoryVectorIndex(store)
+
+    index.upsert(approved_memory())
+
+    assert store.deleted == []
+    assert len(store.added) == 1
+
+
+def test_existing_collection_still_surfaces_delete_failure() -> None:
+    store = FakeVectorStore(fail_delete=True, collection_exists=True)
+    index = MemoryVectorIndex(store)
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        index.upsert(approved_memory())
 
 
 def test_rebuild_index_clears_customer_and_indexes_records() -> None:

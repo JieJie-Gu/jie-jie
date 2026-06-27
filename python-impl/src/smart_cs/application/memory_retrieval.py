@@ -53,9 +53,20 @@ class MemoryVectorIndex:
     def upsert(self, memory: dict[str, Any]) -> None:
         document = memory_index_document(memory)
         memory_id = str(document.metadata["memory_id"])
-        if not self.delete(memory, ignore_not_found=True):
-            raise RuntimeError("Unable to delete stale memory vector before upsert")
+        if self._collection_exists() is not False:
+            if not self.delete(memory, ignore_not_found=True):
+                raise RuntimeError("Unable to delete stale memory vector before upsert")
         self.store.add_documents([document], ids=[memory_id])
+
+    def _collection_exists(self) -> bool | None:
+        checker = getattr(self.store, "collection_exists", None)
+        if not callable(checker):
+            return None
+        try:
+            return checker()
+        except Exception:
+            LOGGER.warning("Unable to inspect memory collection; using guarded delete", exc_info=True)
+            return None
 
     def delete(self, memory: dict[str, Any], *, ignore_not_found: bool = False) -> bool:
         memory_id = str(memory.get("memory_id") or memory.get("id") or "")

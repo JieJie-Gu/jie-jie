@@ -106,13 +106,19 @@ def run_case(client: AgentEvalClient, case: AgentEvalCase) -> AgentEvalObservati
     responses: list[dict[str, Any]] = []
     confirm_response: dict[str, Any] | None = None
     tool_calls: list[dict[str, Any]] = []
+    pre_confirm_tool_calls: list[dict[str, Any]] = []
+    post_confirm_tool_calls: list[dict[str, Any]] = []
     context: dict[str, Any] = {}
+    conversation_id: str | None = None
     try:
         conversation = client.create_conversation(case.customer_id)
         conversation_id = str(conversation["id"])
         for message in case.messages:
             responses.append(client.send_message(conversation_id, case.customer_id, message))
 
+        pre_confirm_tool_calls = client.list_tool_calls(
+            conversation_id, case.customer_id
+        ).get("tool_calls", [])
         pending_action = _latest_pending_action(responses)
         if pending_action and case.confirm in {"approve", "reject"}:
             confirm_response = client.confirm(
@@ -121,20 +127,41 @@ def run_case(client: AgentEvalClient, case: AgentEvalCase) -> AgentEvalObservati
                 str(pending_action["action_id"]),
                 approved=case.confirm == "approve",
             )
-
-        tool_calls = client.list_tool_calls(conversation_id, case.customer_id).get("tool_calls", [])
+            tool_calls = client.list_tool_calls(
+                conversation_id, case.customer_id
+            ).get("tool_calls", [])
+            post_confirm_tool_calls = _new_tool_calls(pre_confirm_tool_calls, tool_calls)
+        else:
+            tool_calls = pre_confirm_tool_calls
         context = client.current_context(conversation_id, case.customer_id)
         return AgentEvalObservation(
             responses=responses,
             confirm_response=confirm_response,
             tool_calls=tool_calls,
+            pre_confirm_tool_calls=pre_confirm_tool_calls,
+            post_confirm_tool_calls=post_confirm_tool_calls,
             context=context,
         )
     except Exception as exc:
+        if conversation_id is not None:
+            try:
+                tool_calls = client.list_tool_calls(
+                    conversation_id, case.customer_id
+                ).get("tool_calls", [])
+                if not pre_confirm_tool_calls:
+                    pre_confirm_tool_calls = tool_calls
+            except Exception:
+                pass
+            try:
+                context = client.current_context(conversation_id, case.customer_id)
+            except Exception:
+                pass
         return AgentEvalObservation(
             responses=responses,
             confirm_response=confirm_response,
             tool_calls=tool_calls,
+            pre_confirm_tool_calls=pre_confirm_tool_calls,
+            post_confirm_tool_calls=post_confirm_tool_calls,
             context=context,
             error=str(exc),
         )
@@ -156,6 +183,10 @@ def build_report(
         "tool_call_summary": _tool_call_summary(observations),
         "memory_summary": _memory_summary(observations),
         "rag_summary": _rag_summary(observations),
+        "case_traces": [
+            _safe_case_trace(case, observation)
+            for case, observation in zip(cases, observations)
+        ],
     }
 
 
@@ -221,6 +252,12 @@ def render_markdown(report: dict[str, Any]) -> str:
             "```json",
             json.dumps(report["rag_summary"], ensure_ascii=False, indent=2),
             "```",
+            "",
+            "## Safety Traces",
+            "",
+            "```json",
+            json.dumps(report["case_traces"], ensure_ascii=False, indent=2),
+            "```",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -238,6 +275,16 @@ def _latest_pending_action(responses: list[dict[str, Any]]) -> dict[str, Any] | 
         if isinstance(pending, dict):
             return pending
     return None
+
+
+def _new_tool_calls(
+    before: list[dict[str, Any]],
+    after: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    before_ids = {str(call.get("id")) for call in before if call.get("id") is not None}
+    if before_ids:
+        return [call for call in after if str(call.get("id")) not in before_ids]
+    return after[len(before) :]
 
 
 def _tool_call_summary(observations: list[AgentEvalObservation]) -> dict[str, int]:
@@ -260,8 +307,47 @@ def _memory_summary(observations: list[AgentEvalObservation]) -> dict[str, Any]:
                 selected += int((call.get("result") or {}).get("count") or 0)
             if call.get("tool_name") == "recall_memory":
                 result = call.get("result") or {}
-                recalled += len(result.get("long_term_memories") or result.get("memories") or [])
+                long_term = result.get("long_term") or {}
+                recalled += len(long_term.get("semantic_memories") or [])
+                recalled += len(long_term.get("episodic_memories") or [])
     return {"selected_memories": selected, "recalled_memories": recalled}
+
+
+def _safe_case_trace(
+    case: AgentEvalCase,
+    observation: AgentEvalObservation,
+) -> dict[str, Any]:
+    pending = _latest_pending_action(observation.responses)
+    return {
+        "case_id": case.case_id,
+        "response_statuses": [response.get("status") for response in observation.responses],
+        "pending_action": _safe_pending_action(pending),
+        "confirm_decision": case.confirm,
+        "confirm_status": (observation.confirm_response or {}).get("status"),
+        "pre_confirm_tools": _safe_tool_trace(observation.pre_confirm_tool_calls),
+        "post_confirm_tools": _safe_tool_trace(observation.post_confirm_tool_calls),
+        "error": observation.error,
+    }
+
+
+def _safe_pending_action(action: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not action:
+        return None
+    return {
+        key: action.get(key)
+        for key in ("action_id", "action_type", "status", "order_id")
+    }
+
+
+def _safe_tool_trace(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "tool_name": call.get("tool_name"),
+            "status": call.get("status"),
+            "error_type": call.get("error_type"),
+        }
+        for call in tool_calls
+    ]
 
 
 def _rag_summary(observations: list[AgentEvalObservation]) -> dict[str, Any]:
@@ -286,10 +372,47 @@ def main() -> None:
 
     cases = load_cases(args.cases)
     client = AgentEvalClient(args.base_url)
-    observations = [run_case(client, case) for case in cases]
+    observations: list[AgentEvalObservation] = []
+    for index, case in enumerate(cases, start=1):
+        print(
+            f"[{index}/{len(cases)}] {case.case_id} ({case.category}) customer={case.customer_id}",
+            flush=True,
+        )
+        observation = run_case(client, case)
+        observations.append(observation)
+        print(
+            "  "
+            f"status={_observation_status(observation)} "
+            f"tools={_observation_tool_names(observation)} "
+            f"error={observation.error or ''}",
+            flush=True,
+        )
     report = build_report(cases=cases, observations=observations, base_url=args.base_url)
     write_report(report, args.json_out, args.md_out)
+    summary = report["summary"]
+    print(
+        f"Score={summary['total_score']:.2f}, passed={summary['passed']}, "
+        f"redline={summary['redline_triggered']}",
+        flush=True,
+    )
     print(f"Wrote {args.json_out} and {args.md_out}")
+
+
+def _observation_status(observation: AgentEvalObservation) -> str:
+    if observation.confirm_response:
+        return str(observation.confirm_response.get("status") or "")
+    if observation.responses:
+        return str(observation.responses[-1].get("status") or "")
+    return ""
+
+
+def _observation_tool_names(observation: AgentEvalObservation) -> list[str]:
+    names: list[str] = []
+    for call in observation.tool_calls:
+        name = str(call.get("tool_name") or "")
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 if __name__ == "__main__":

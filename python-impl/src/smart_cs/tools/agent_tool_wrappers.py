@@ -15,7 +15,7 @@ from smart_cs.application.memory_retrieval import MemoryRetrievalService
 from smart_cs.application.memory_selector import MemoryContextSelector
 from smart_cs.application.policy import PolicyEngine
 from smart_cs.domain.enums import ToolCallStatus
-from smart_cs.domain.errors import ToolPermissionError
+from smart_cs.domain.errors import InvalidActionState, ToolPermissionError
 from smart_cs.tools.executor import AuthorizedToolExecutor, TurnFence
 
 
@@ -74,9 +74,7 @@ def build_post_sales_tools(
         ),
         make_request_after_sales_tool(
             executor,
-            knowledge_service,
             context_provider,
-            policy_engine,
         ),
         make_request_handoff_tool(executor, context_provider),
         make_recall_memory_tool(executor, context_provider, caller_agent="PostSalesAgent"),
@@ -173,30 +171,18 @@ def make_recall_memory_tool(
 
 def make_request_after_sales_tool(
     executor: AuthorizedToolExecutor,
-    knowledge_service: KnowledgeService | None,
     context_provider: ContextProvider,
-    policy_engine: PolicyEngine,
 ):
     @tool
     def request_after_sales(order_id: str, reason: str) -> dict[str, Any]:
         """Submit an approved after-sales request for the current customer."""
 
         ctx = context_provider()
-        draft = draft_after_sales_action(
+        return _submit_existing_pending(
             executor,
-            knowledge_service,
-            policy_engine,
             ctx,
+            expected_action_type="after_sales",
             order_id=order_id,
-            reason=reason,
-        )
-        if draft.get("status") != "pending_confirmation":
-            return draft
-        return executor.submit_confirmed_action(
-            draft["action_id"],
-            ctx.customer_id,
-            caller_agent="ConfirmActionNode",
-            turn_fence=ctx.turn_fence,
         )
 
     return request_after_sales
@@ -211,14 +197,10 @@ def make_request_handoff_tool(
         """Submit an approved human-handoff request for the current customer."""
 
         ctx = context_provider()
-        draft = draft_handoff_action(executor, ctx, reason=reason)
-        if draft.get("status") != "pending_confirmation":
-            return draft
-        return executor.submit_confirmed_action(
-            draft["action_id"],
-            ctx.customer_id,
-            caller_agent="ConfirmActionNode",
-            turn_fence=ctx.turn_fence,
+        return _submit_existing_pending(
+            executor,
+            ctx,
+            expected_action_type="handoff",
         )
 
     return request_handoff
@@ -243,11 +225,13 @@ def draft_after_sales_action(
         },
         caller_agent="PostSalesAgent",
     )
+    if order_result.get("status") == "order_unavailable":
+        return order_result
     knowledge_result = run_knowledge_rag(
         executor,
         knowledge_service,
         ctx,
-        query=f"售后政策 {reason}",
+        query=_after_sales_policy_query(reason),
         caller_agent="PostSalesAgent",
     )
     decision = policy_engine.evaluate_after_sales(
@@ -301,6 +285,42 @@ def draft_handoff_action(
     )
 
 
+def _submit_existing_pending(
+    executor: AuthorizedToolExecutor,
+    ctx: RuntimeToolContext,
+    *,
+    expected_action_type: str,
+    order_id: str | None = None,
+) -> dict[str, Any]:
+    tool_name = (
+        "request_after_sales" if expected_action_type == "after_sales" else "request_handoff"
+    )
+    _authorize_wrapper_tool(executor, tool_name, "PostSalesAgent")
+    pending = executor.pending_action_for_conversation(ctx.conversation_id, ctx.customer_id)
+    if pending is None:
+        raise InvalidActionState("No matching pending action is available for submission")
+    if pending.get("action_type") != expected_action_type:
+        raise InvalidActionState("Pending action type does not match the approved tool call")
+    if order_id is not None and pending.get("order_id") != order_id:
+        raise InvalidActionState("Pending action order does not match the approved tool call")
+    return executor.submit_confirmed_action(
+        str(pending["action_id"]),
+        ctx.customer_id,
+        caller_agent="ConfirmActionNode",
+        turn_fence=ctx.turn_fence,
+    )
+
+
+def _after_sales_policy_query(reason: str) -> str:
+    quality_terms = ("质量", "开胶", "破损", "脱线", "损坏", "断裂", "瑕疵")
+    size_terms = ("尺码", "不合适", "偏大", "偏小", "宽脚", "挤脚")
+    if any(term in reason for term in quality_terms):
+        return f"售后政策 质量问题售后 图片凭证 {reason}"
+    if any(term in reason for term in size_terms):
+        return f"售后政策 退换货 商品完好 尺码问题 {reason}"
+    return f"售后政策 售后申请条件 商品完好 图片凭证 {reason}"
+
+
 def run_knowledge_rag(
     executor: AuthorizedToolExecutor,
     knowledge_service: KnowledgeService | None,
@@ -327,15 +347,22 @@ def run_knowledge_rag(
         else:
             result = knowledge_service.answer(query).as_result()
     except Exception as error:
+        result = {
+            "status": "knowledge_unavailable",
+            "answer": "知识库暂时不可用，无法提供政策依据。",
+            "contexts": [],
+            "citations": [],
+        }
         executor.repository.record_tool_call(
             tool_name="knowledge_rag",
             arguments=arguments,
             customer_id=ctx.customer_id,
             status=ToolCallStatus.REJECTED.value,
+            result=result,
             error_type=type(error).__name__,
             duration_ms=_duration_ms(started),
         )
-        raise
+        return result
     executor.repository.record_tool_call(
         tool_name="knowledge_rag",
         arguments=arguments,

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     rag_model: str | None = None
     vision_model: str | None = None
     milvus_uri: str = "http://localhost:19530"
+    milvus_timeout_seconds: float = 5.0
     milvus_collection: str = "smart_cs_knowledge"
     memory_vector_enabled: bool = True
     memory_milvus_collection: str = "smart_cs_memories"

@@ -75,6 +75,8 @@ def test_query_policy_routes_common_categories() -> None:
     assert policy.prepare("跑鞋怎么保养")[1] == 'category == "product"'
     assert policy.prepare("鞋面沾污后怎么清洁")[1] == 'category == "product"'
     assert policy.prepare("什么时候转人工")[1] == 'category == "faq"'
+    assert policy.prepare("鞋面脱线了")[1] == 'category == "after_sales"'
+    assert policy.prepare("鞋面损坏了")[1] == 'category == "after_sales"'
 
 
 def test_knowledge_answer_exposes_section_citation() -> None:
